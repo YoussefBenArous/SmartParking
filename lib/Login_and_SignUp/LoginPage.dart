@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
+import 'package:smart_parking/HomePage/Home.dart';
 import 'package:smart_parking/Login_and_SignUp/SignUpPage.dart';
 import 'package:smart_parking/widget/inputbutton.dart';
 
@@ -98,7 +99,14 @@ class _LoginPageState extends State<LoginPage> {
             ),
             Center(
               child: ElevatedButton(
-                onPressed: () {},
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const HomePage(),
+                    ),
+                  );
+                },
                 child: const Text(
                   "Login",
                   style: TextStyle(
