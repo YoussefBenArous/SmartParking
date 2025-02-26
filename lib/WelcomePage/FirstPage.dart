@@ -79,6 +79,7 @@ class _FirstPageState extends State<FirstPage> {
     ];
 
     return Scaffold(
+      backgroundColor: Colors.white,
       body: Stack(
         children: [
           PageView(

@@ -24,7 +24,7 @@ class button extends StatelessWidget {
         backgroundColor: MaterialStatePropertyAll(
           Color(0xff0079C0),
         ),
-        maximumSize: MaterialStatePropertyAll(
+        minimumSize: MaterialStatePropertyAll(
           Size(width, height),
         ),
         shape: MaterialStateProperty.all(

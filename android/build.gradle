@@ -1,7 +1,36 @@
+buildscript {
+    ext {
+        kotlin_version = '1.7.10'
+        gradle_version = '7.3.0'
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath "com.android.tools.build:gradle:$gradle_version"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        classpath 'com.google.gms:google-services:4.4.2'
+    }
+}
+
+// Force Kotlin version for all modules
 allprojects {
     repositories {
         google()
         mavenCentral()
+    }
+}
+
+// Force specific Kotlin version for all subprojects
+subprojects {
+    project.configurations.all {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'org.jetbrains.kotlin') {
+                details.useVersion kotlin_version
+            }
+        }
     }
 }
 
@@ -15,4 +44,15 @@ subprojects {
 
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
+}
+
+allprojects {
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        kotlinOptions {
+            jvmTarget = "1.8"
+            freeCompilerArgs += [
+                "-Xskip-metadata-version-check"
+            ]
+        }
+    }
 }
