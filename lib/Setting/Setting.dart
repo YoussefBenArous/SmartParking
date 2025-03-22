@@ -2,7 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:smart_parking/HomePage/UserHome.dart';
+import 'package:smart_parking/HomePage/userpages/UserHome.dart';
+import 'package:smart_parking/Setting/RemoveReservation.dart';
 import 'package:smart_parking/widget/CustomTiltle.dart';
 import 'package:smart_parking/widget/button.dart'; // Ensure it's correctly defined
 
@@ -58,20 +59,20 @@ class _SettingPageState extends State<SettingPage> {
       appBar: AppBar(
         toolbarHeight: 100,
         backgroundColor: const Color(0XFF0079C0),
-        centerTitle: true,
-        title: const CustomTitle(
+        title: CustomTitle(
           text: "Settings",
           color: Colors.white,
           size: 32,
         ),
+        centerTitle: true,
         leading: IconButton(
           onPressed: () {
-            Navigator.pushReplacement(
+            Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => const HomePage(),
+                builder: (context) => HomePage(),
               ),
-            );
+            ); // Simply pop back to previous screen
           },
           icon: const Icon(Icons.arrow_back_rounded),
           iconSize: 25,
@@ -127,7 +128,14 @@ class _SettingPageState extends State<SettingPage> {
                 ),
                 const SizedBox(height: 20),
                 button(
-                  onPressed: () {},
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => RemoveReservation(),
+                      ),
+                    );
+                  },
                   text: "Cancel Reservation",
                   fontsize: 20,
                   width: 293,

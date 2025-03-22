@@ -2,15 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:smart_parking/HomePage/UserHome.dart';
-import 'package:smart_parking/HomePage/ParkingHome.dart';
 import 'package:smart_parking/Login_and_SignUp/LoginPage.dart';
-import 'package:smart_parking/Login_and_SignUp/SignUpPage.dart';
 import 'package:smart_parking/NetworkIssue/networkissueScreen.dart';
-import 'package:smart_parking/QRcode/QRCodeScreen.dart';
-import 'package:smart_parking/Setting/Setting.dart';
 import 'package:smart_parking/WelcomePage/FirstPage.dart';
-import 'package:smart_parking/parking/parking.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

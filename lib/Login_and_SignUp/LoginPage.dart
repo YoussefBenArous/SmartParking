@@ -2,11 +2,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:smart_parking/HomePage/UserHome.dart';
-import 'package:smart_parking/HomePage/ParkingHome.dart';
+import 'package:smart_parking/HomePage/userpages/UserHome.dart';
+import 'package:smart_parking/HomePage/parkingownerPages/ParkingHome.dart';
 import 'package:smart_parking/Login_and_SignUp/SignUpPage.dart';
 import 'package:smart_parking/widget/button.dart';
 import 'package:smart_parking/widget/inputbutton.dart';
+import '../services/parking_owner_service.dart';
+import '../HomePage/parkingownerPages/ParkingOwnerDashboard.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -24,97 +26,100 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = false;
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
-Future<void> _login() async {
-  if (!_formKey.currentState!.validate()) {
-    return;
-  }
+  Future<void> _handleLogin() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
 
-  setState(() {
-    _isLoading = true;
-  });
+    setState(() {
+      _isLoading = true;
+    });
 
-  try {
-    UserCredential userCredential = await _auth.signInWithEmailAndPassword(
-      email: _emailController.text,
-      password: _passwordController.text,
-    );
+    try {
+      UserCredential userCredential = await _auth.signInWithEmailAndPassword(
+        email: _emailController.text,
+        password: _passwordController.text,
+      );
 
-    // ✅ Check if authentication was successful
-    if (userCredential.user != null) {
-      print("✅ Login successful! UID: ${userCredential.user!.uid}");
+      // ✅ Check if authentication was successful
+      if (userCredential.user != null) {
+        print("✅ Login successful! UID: ${userCredential.user!.uid}");
 
-      // Fetch user data from Firestore
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userCredential.user!.uid)
-          .get();
+        // Fetch user data from Firestore
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(userCredential.user!.uid)
+            .get();
 
-      if (userDoc.exists) {
-        print("✅ User document found in Firestore.");
-        final userData = userDoc.data();
-        final userRole = userData?['userType']; // Make sure it's 'userType'
+        if (userDoc.exists) {
+          print("✅ User document found in Firestore.");
+          final userData = userDoc.data();
+          final userRole = userData?['userType']; // Make sure it's 'userType'
 
-        if (userRole == 'User') {
-          print("✅ Navigating to Home Page.");
-          if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const HomePage()),
-          );
-        } else if (userRole == 'Parking Owner') {
-          print("✅ Navigating to Parking Owner Page.");
-          if (!mounted) return;
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const ParkingOwnerPage()),
-          );
+          if (userRole == 'User') {
+            print("✅ Navigating to Home Page.");
+            if (!mounted) return;
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (context) => const HomePage()),
+            );
+          } else if (userRole == 'Parking Owner') {
+            bool hasParking = await ParkingOwnerService.hasExistingParking();
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => hasParking 
+                    ? ParkingOwnerDashboard()
+                    : ParkingAddPage(),
+              ),
+            );
+          } else {
+            print("⚠️ Unrecognized user role: $userRole");
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Unrecognized user role.'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
         } else {
-          print("⚠️ Unrecognized user role: $userRole");
+          print("❌ User document not found in Firestore!");
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Unrecognized user role.'),
+              content: Text('User document not found.'),
               backgroundColor: Colors.red,
             ),
           );
         }
-      } else {
-        print("❌ User document not found in Firestore!");
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('User document not found.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+      }
+    } on FirebaseAuthException catch (e) {
+      print("❌ FirebaseAuthException: ${e.code}");
+      String errorMessage = 'An error occurred';
+      if (e.code == 'user-not-found') {
+        errorMessage = 'No user found for that email.';
+      } else if (e.code == 'wrong-password') {
+        errorMessage = 'Wrong password provided.';
+      } else if (e.code == 'invalid-email') {
+        errorMessage = 'Invalid email address.';
+      } else if (e.code == 'too-many-requests') {
+        errorMessage = 'Too many requests. Try again later.';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
+      );
+    } catch (e) {
+      print("❌ General error: ${e.toString()}");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
       }
     }
-  } on FirebaseAuthException catch (e) {
-    print("❌ FirebaseAuthException: ${e.code}");
-    String errorMessage = 'An error occurred';
-    if (e.code == 'user-not-found') {
-      errorMessage = 'No user found for that email.';
-    } else if (e.code == 'wrong-password') {
-      errorMessage = 'Wrong password provided.';
-    } else if (e.code == 'invalid-email') {
-      errorMessage = 'Invalid email address.';
-    } else if (e.code == 'too-many-requests') {
-      errorMessage = 'Too many requests. Try again later.';
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
-    );
-  } catch (e) {
-    print("❌ General error: ${e.toString()}");
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
-    );
-  } finally {
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
-    }
   }
-}
 
   @override
   Widget build(BuildContext context) {
@@ -223,7 +228,7 @@ Future<void> _login() async {
               ),
               Center(
                 child: button(
-                    onPressed: _login,
+                    onPressed: _handleLogin,
                     text: _isLoading ? "Logging in..." : "Login",
                     fontsize: 20,
                     width: 215,

@@ -1,7 +1,7 @@
 buildscript {
     ext {
-        kotlin_version = '1.7.10'
-        gradle_version = '7.3.0'
+        kotlin_version = '1.7.10'  // Keep this version
+        gradle_version = '7.4.2'  // Updated to support SDK 34
     }
     repositories {
         google()
@@ -11,48 +11,37 @@ buildscript {
     dependencies {
         classpath "com.android.tools.build:gradle:$gradle_version"
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-        classpath 'com.google.gms:google-services:4.4.2'
+        classpath 'com.google.gms:google-services:4.3.15'
     }
 }
 
-// Force Kotlin version for all modules
 allprojects {
     repositories {
         google()
         mavenCentral()
-    }
-}
-
-// Force specific Kotlin version for all subprojects
-subprojects {
-    project.configurations.all {
-        resolutionStrategy.eachDependency { details ->
-            if (details.requested.group == 'org.jetbrains.kotlin') {
-                details.useVersion kotlin_version
-            }
-        }
+        maven { url 'https://jitpack.io' }
     }
 }
 
 rootProject.buildDir = '../build'
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
-}
-subprojects {
-    project.evaluationDependsOn(':app')
+    
+    project.plugins.whenPluginAdded { plugin ->
+        if (plugin.class.name.startsWith('org.jetbrains.kotlin')) {
+            tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+                kotlinOptions {
+                    jvmTarget = "1.8"
+                    freeCompilerArgs += [
+                        "-Xskip-metadata-version-check",
+                        "-Xjvm-default=all"
+                    ]
+                }
+            }
+        }
+    }
 }
 
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
-}
-
-allprojects {
-    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-        kotlinOptions {
-            jvmTarget = "1.8"
-            freeCompilerArgs += [
-                "-Xskip-metadata-version-check"
-            ]
-        }
-    }
 }
