@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:smart_parking/models/firebase_service.dart';
 import '../services/firebase_service.dart';
 
 class FirebaseProvider extends InheritedWidget {

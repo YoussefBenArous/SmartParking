@@ -6,6 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:smart_parking/HomePage/parkingownerPages/ParkingOwnerDashboard.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class ParkingAddPage extends StatefulWidget {
   @override
@@ -32,231 +34,278 @@ class _ParkingAddPageState extends State<ParkingAddPage> {
     _mapController = MapController();
   }
 
-Future<bool> _isLocationAvailable(LatLng location) async {
-  try {
-    final parkingSpots = await FirebaseFirestore.instance.collection('parking').get();
+  Future<bool> _isLocationAvailable(LatLng location) async {
+    try {
+      final parkingSpots =
+          await FirebaseFirestore.instance.collection('parking').get();
 
-    for (var doc in parkingSpots.docs) {
-      GeoPoint parkingLocation = doc.data()['location'];
-      double distance = Geolocator.distanceBetween(
-        location.latitude, location.longitude,
-        parkingLocation.latitude, parkingLocation.longitude,
+      for (var doc in parkingSpots.docs) {
+        GeoPoint parkingLocation = doc.data()['location'];
+        double distance = Geolocator.distanceBetween(
+          location.latitude,
+          location.longitude,
+          parkingLocation.latitude,
+          parkingLocation.longitude,
+        );
+
+        if (distance < _minimumDistanceBetweenParkings) {
+          setState(() {
+            _errorMessage =
+                'A parking already exists within $_minimumDistanceBetweenParkings meters.';
+          });
+          return false;
+        }
+      }
+      return true;
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error checking location: $e';
+      });
+      return false;
+    }
+  }
+
+  Future<void> _getAddressFromLatLng(LatLng position) async {
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
       );
 
-      if (distance < _minimumDistanceBetweenParkings) {
+      if (placemarks.isNotEmpty) {
+        Placemark place = placemarks[0];
         setState(() {
-          _errorMessage = 'A parking already exists within $_minimumDistanceBetweenParkings meters.';
+          _address = '${place.street}, ${place.locality}, ${place.country}';
         });
-        return false;
       }
+    } catch (e) {
+      print('Error getting address: $e');
     }
-    return true;
-  } catch (e) {
+  }
+
+  Future<void> _searchLocation(String query) async {
+    if (query.isEmpty) return;
+
     setState(() {
-      _errorMessage = 'Error checking location: $e';
+      _isSearching = true;
+      _errorMessage = null;
     });
-    return false;
-  }
-}
 
-Future<void> _getAddressFromLatLng(LatLng position) async {
-  try {
-    List<Placemark> placemarks = await placemarkFromCoordinates(
-      position.latitude,
-      position.longitude,
-    );
+    try {
+      List<Location> locations = await locationFromAddress(query);
+      if (locations.isNotEmpty) {
+        Location firstLocation = locations.first;
+        LatLng newPosition =
+            LatLng(firstLocation.latitude, firstLocation.longitude);
 
-    if (placemarks.isNotEmpty) {
-      Placemark place = placemarks[0];
-      setState(() {
-        _address = '${place.street}, ${place.locality}, ${place.country}';
-      });
-    }
-  } catch (e) {
-    print('Error getting address: $e');
-  }
-}
+        setState(() {
+          _searchResults = locations;
+          _selectedLocation = newPosition;
+        });
 
-Future<void> _searchLocation(String query) async {
-  if (query.isEmpty) return;
-
-  setState(() {
-    _isSearching = true;
-    _errorMessage = null;
-  });
-
-  try {
-    List<Location> locations = await locationFromAddress(query);
-    if (locations.isNotEmpty) {
-      Location firstLocation = locations.first;
-      LatLng newPosition = LatLng(firstLocation.latitude, firstLocation.longitude);
-
-      setState(() {
-        _searchResults = locations;
-        _selectedLocation = newPosition;
-      });
-
-      // Move map to searched location
-      _mapController.move(newPosition, 15);
-    } else {
+        // Move map to searched location
+        _mapController.move(newPosition, 15);
+      } else {
+        setState(() {
+          _errorMessage = 'Location not found';
+          _searchResults = [];
+        });
+      }
+    } catch (e) {
       setState(() {
         _errorMessage = 'Location not found';
         _searchResults = [];
       });
+    } finally {
+      setState(() {
+        _isSearching = false;
+      });
     }
-  } catch (e) {
-    setState(() {
-      _errorMessage = 'Location not found';
-      _searchResults = [];
-    });
-  } finally {
-    setState(() {
-      _isSearching = false;
-    });
   }
-}
 
-Future<void> _saveParkingSpot() async {
-  if (!_validateInputs()) return;
+  Future<void> _saveParkingSpot() async {
+    if (!_validateInputs()) return;
 
-  setState(() {
-    _isLoading = true;
-    _errorMessage = null;
-  });
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
 
-  try {
-    User? user = FirebaseAuth.instance.currentUser;
-    if (user == null) throw Exception("User not logged in.");
+    try {
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception("User not logged in.");
 
-    // Ensure the user is a Parking Owner
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-    if (userDoc.data()?['userType'] != 'Parking Owner') {
-      throw Exception("User is not a Parking Owner.");
+      // Ensure the user is a Parking Owner
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      if (userDoc.data()?['userType'] != 'Parking Owner') {
+        throw Exception("User is not a Parking Owner.");
+      }
+
+      // Start a batch write
+      WriteBatch batch = FirebaseFirestore.instance.batch();
+
+      // Create the main parking document with a specific ID
+      String parkingId = FirebaseFirestore.instance.collection('parking').doc().id;
+      DocumentReference parkingRef = FirebaseFirestore.instance.collection('parking').doc(parkingId);
+
+      final parkingData = {
+        'name': _nameController.text.trim(),
+        'location': {
+          'latitude': _selectedLocation!.latitude,
+          'longitude': _selectedLocation!.longitude,
+        },
+        'capacity': int.parse(_capacityController.text),
+        'available': int.parse(_capacityController.text),
+        'price': _priceController.text.trim(),
+        'ownerId': user.uid,
+        'createdAt': FieldValue.serverTimestamp(),
+        'address': _address ?? '',
+        'status': 'active',
+      };
+
+      batch.set(parkingRef, parkingData);
+
+      // Initialize spots in Realtime Database
+      final realtimeRef = FirebaseDatabase.instance.ref();
+      final spotsRef = realtimeRef.child('spots').child(parkingId);
+      Map<String, dynamic> spotsData = {};
+
+      // Create spots collection in Firestore
+      CollectionReference spotsCollection = parkingRef.collection('spots');
+
+      for (int i = 1; i <= int.parse(_capacityController.text); i++) {
+        String spotId = 'spot_$i';
+        
+        // Prepare spot data for Realtime Database
+        spotsData[spotId] = {
+          'number': 'P$i',
+          'status': 'available',
+          'lastUpdated': ServerValue.timestamp,
+          'lastBookingId': '',
+          'lastUserId': '',
+          'ignoreStatusUpdates': false
+        };
+
+        // Add spot to Firestore batch
+        DocumentReference spotRef = spotsCollection.doc(spotId);
+        batch.set(spotRef, {
+          'number': 'P$i',
+          'isAvailable': true,
+          'type': 'standard',
+          'lastUpdated': FieldValue.serverTimestamp(),
+          'status': 'available'
+        });
+      }
+
+      // Add parking reference to owner's parkings collection
+      DocumentReference ownerParkingRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('ownedParkings')
+          .doc(parkingId);
+
+      batch.set(ownerParkingRef, {
+        ...parkingData,
+        'parkingId': parkingId,
+      });
+
+      // Add parking to parkingOwners in Realtime Database
+      final ownerRef = realtimeRef.child('parkingOwners').child(user.uid);
+      final ownerParkingData = {
+        'parkingId': parkingId,
+        'name': _nameController.text.trim(),
+        'capacity': int.parse(_capacityController.text),
+        'createdAt': ServerValue.timestamp
+      };
+
+      // Execute all operations
+      await Future.wait([
+        // Commit Firestore batch
+        batch.commit(),
+        // Set spots in Realtime Database
+        spotsRef.set(spotsData),
+        // Update parking owner data in Realtime Database
+        ownerRef.child('parkings').child(parkingId).set(ownerParkingData)
+      ]);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Parking spot added successfully')));
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ParkingOwnerDashboard(),
+        ),
+      );
+    } catch (e) {
+      setState(() {
+        _errorMessage = e.toString();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  bool _validateInputs() {
+    if (_selectedLocation == null ||
+        _nameController.text.trim().isEmpty ||
+        _priceController.text.trim().isEmpty ||
+        _capacityController.text.trim().isEmpty) {
+      setState(() {
+        _errorMessage = "Please fill all fields and select a location.";
+      });
+      return false;
     }
 
-    // Start a batch write
-    WriteBatch batch = FirebaseFirestore.instance.batch();
+    if (int.tryParse(_capacityController.text) == null) {
+      setState(() {
+        _errorMessage = "Capacity must be a valid number.";
+      });
+      return false;
+    }
 
-    // Create the main parking document
-    DocumentReference parkingRef = FirebaseFirestore.instance.collection('parking').doc();
-    
-    final parkingData = {
-      'name': _nameController.text.trim(),
-      'location': {
-        'latitude': _selectedLocation!.latitude,
-        'longitude': _selectedLocation!.longitude,
-      },
-      'capacity': int.parse(_capacityController.text),
-      'available': int.parse(_capacityController.text),
-      'price': _priceController.text.trim(),
-      'ownerId': user.uid,
-      'createdAt': FieldValue.serverTimestamp(),
-      'address': _address ?? 'Need to fix',
-      'status': 'active',
-    };
-
-    batch.set(parkingRef, parkingData);
-
-    // Add parking reference to owner's parkings collection
-    DocumentReference ownerParkingRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('ownedParkings')
-        .doc(parkingRef.id);
-
-    batch.set(ownerParkingRef, {
-      ...parkingData,
-      'parkingId': parkingRef.id,
-    });
-
-    // Update user's document to indicate they own parkings
-    DocumentReference userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-    batch.update(userRef, {
-      'hasParking': true,
-      'parkingCount': FieldValue.increment(1),
-      'lastUpdated': FieldValue.serverTimestamp(),
-    });
-
-    // Commit the batch
-    await batch.commit();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Parking spot added successfully'))
-    );
-    Navigator.pop(context);
-  } on FirebaseException catch (e) {
-    setState(() {
-      _errorMessage = 'Firestore Error: ${e.code} - ${e.message}';
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Firestore Error: ${e.message}'), backgroundColor: Colors.red)
-    );
-  } catch (e) {
-    setState(() {
-      _errorMessage = e.toString();
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red)
-    );
-  } finally {
-    setState(() => _isLoading = false);
-  }
-}
-bool _validateInputs() {
-  if (_selectedLocation == null || 
-      _nameController.text.trim().isEmpty ||
-      _priceController.text.trim().isEmpty || 
-      _capacityController.text.trim().isEmpty) {
-    setState(() {
-      _errorMessage = "Please fill all fields and select a location.";
-    });
-    return false;
+    return true;
   }
 
-  if (int.tryParse(_capacityController.text) == null) {
-    setState(() {
-      _errorMessage = "Capacity must be a valid number.";
-    });
-    return false;
+  bool _validateParkingData(Map<String, dynamic> data) {
+    return data.containsKey('name') &&
+        data.containsKey('location') &&
+        data['location'] is Map &&
+        data['location']['latitude'] is double &&
+        data['location']['longitude'] is double &&
+        data.containsKey('capacity') &&
+        data.containsKey('available') &&
+        data.containsKey('price') &&
+        data.containsKey('ownerId') &&
+        data['capacity'] is int &&
+        data['available'] is int &&
+        data['available'] <= data['capacity'] &&
+        data['price'] is String;
   }
 
-  return true;
-}
+  void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
+    setState(() {
+      _selectedLocation = latlng;
+      _isLoading = true;
+    });
 
-bool _validateParkingData(Map<String, dynamic> data) {
-  return data.containsKey('name') &&
-         data.containsKey('location') &&
-         data['location'] is Map &&
-         data['location']['latitude'] is double &&
-         data['location']['longitude'] is double &&
-         data.containsKey('capacity') &&
-         data.containsKey('available') &&
-         data.containsKey('price') &&
-         data.containsKey('ownerId') &&
-         data['capacity'] is int &&
-         data['available'] is int &&
-         data['available'] <= data['capacity'] &&
-         data['price'] is String;
-}
+    await _getAddressFromLatLng(latlng);
 
-void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
-  setState(() {
-    _selectedLocation = latlng;
-    _isLoading = true;
-  });
-
-  await _getAddressFromLatLng(latlng);
-
-  setState(() {
-    _isLoading = false;
-  });
-}
+    setState(() {
+      _isLoading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Add Parking Spot')),
-      body: SingleChildScrollView( // Wrap with SingleChildScrollView
+      body: SingleChildScrollView(
+        // Wrap with SingleChildScrollView
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
@@ -267,7 +316,8 @@ void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
                 decoration: InputDecoration(
                   labelText: 'Search location',
                   suffixIcon: IconButton(
-                    icon: Icon(_isSearching ? Icons.hourglass_empty : Icons.search),
+                    icon: Icon(
+                        _isSearching ? Icons.hourglass_empty : Icons.search),
                     onPressed: () => _searchLocation(_searchController.text),
                   ),
                   border: OutlineInputBorder(),
@@ -282,7 +332,8 @@ void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
                     itemBuilder: (context, index) {
                       final location = _searchResults[index];
                       return ListTile(
-                        title: Text('${location.latitude}, ${location.longitude}'),
+                        title:
+                            Text('${location.latitude}, ${location.longitude}'),
                         onTap: () {
                           setState(() {
                             _selectedLocation = LatLng(
@@ -318,13 +369,15 @@ void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
                           child: FlutterMap(
                             mapController: _mapController,
                             options: MapOptions(
-                              initialCenter: LatLng(36.8065, 10.1815), // Center map (Tunisia)
+                              initialCenter: LatLng(
+                                  36.8065, 10.1815), // Center map (Tunisia)
                               initialZoom: 13.0,
                               onTap: _onMapTap,
                             ),
                             children: [
                               TileLayer(
-                                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                urlTemplate:
+                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                                 tileProvider: CancellableNetworkTileProvider(),
                               ),
                               if (_selectedLocation != null)
@@ -334,7 +387,8 @@ void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
                                       point: _selectedLocation!,
                                       width: 40,
                                       height: 40,
-                                      child: Icon(Icons.location_pin, size: 40, color: Colors.red),
+                                      child: Icon(Icons.location_pin,
+                                          size: 40, color: Colors.red),
                                     ),
                                   ],
                                 ),
@@ -344,11 +398,13 @@ void _onMapTap(TapPosition tapPosition, LatLng latlng) async {
                         SizedBox(height: 20),
                         TextField(
                           controller: _nameController,
-                          decoration: InputDecoration(labelText: 'Parking Name'),
+                          decoration:
+                              InputDecoration(labelText: 'Parking Name'),
                         ),
                         TextField(
                           controller: _priceController,
-                          decoration: InputDecoration(labelText: 'Price per Hour'),
+                          decoration:
+                              InputDecoration(labelText: 'Price per Hour'),
                           keyboardType: TextInputType.number,
                         ),
                         TextField(

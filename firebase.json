@@ -1,1 +1,41 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"smartparking-4025c","appId":"1:786760277384:android:107c05c935771fc7952e3d","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"smartparking-4025c","configurations":{"android":"1:786760277384:android:107c05c935771fc7952e3d","ios":"1:786760277384:ios:26001b217284f712952e3d","macos":"1:786760277384:ios:26001b217284f712952e3d","web":"1:786760277384:web:891d912f6aed4dd3952e3d","windows":"1:786760277384:web:c1f662aaab1406fd952e3d"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "smartparking-4025c",
+          "appId": "1:786760277384:android:107c05c935771fc7952e3d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "smartparking-4025c",
+          "configurations": {
+            "android": "1:786760277384:android:107c05c935771fc7952e3d",
+            "ios": "1:786760277384:ios:26001b217284f712952e3d",
+            "macos": "1:786760277384:ios:26001b217284f712952e3d",
+            "web": "1:786760277384:web:891d912f6aed4dd3952e3d",
+            "windows": "1:786760277384:web:c1f662aaab1406fd952e3d"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" run lint"
+      ]
+    }
+  ]
+}

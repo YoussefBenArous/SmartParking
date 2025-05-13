@@ -14,6 +14,7 @@ import 'package:smart_parking/Setting/Setting.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_parking/parking/SpotSelectScreen.dart';
 import 'package:smart_parking/services/auth_service.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -26,6 +27,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   LatLng? _currentLocation;
   late final MapController _mapController;
   final Location _locationService = Location();
+  final FirebaseDatabase _database = FirebaseDatabase.instance;
   List<Map<String, dynamic>> _parkingLocations = [];
   List<Map<String, dynamic>> _filteredParkingLocations = [];
   bool _isLoading = true;
@@ -60,8 +62,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _initializeLocationSettings() async {
     await _locationService.changeSettings(
       accuracy: LocationAccuracy.high,
-      interval: 5000,
-      distanceFilter: 5,
+      interval: 10000, // Increased from 5000
+      distanceFilter: 10, // Increased from 5
     );
   }
 
@@ -192,14 +194,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _initializeParkingSpots(String parkingId, int capacity) async {
     try {
-      final spotsCollection =
-          _firestore.collection('parking').doc(parkingId).collection('spots');
+      // Check if spots exist in Realtime Database
+      final realtimeRef = _database.ref('spots/$parkingId');
+      final realtimeSnapshot = await realtimeRef.get();
+
+      if (realtimeSnapshot.value == null) {
+        // Create spots in Realtime Database
+        Map<String, dynamic> spots = {};
+        for (int i = 1; i <= capacity; i++) {
+          final spotId = 'spot_$i';
+          spots[spotId] = {
+            'number': 'P$i',
+            'status': 'available',
+            'lastUpdated': ServerValue.timestamp,
+            'lastBookingId': '',
+            'lastUserId': '',
+            'ignoreStatusUpdates': false
+          };
+        }
+        await realtimeRef.set(spots);
+      }
+
+      // Get spots from Firestore
+      final spotsCollection = _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .collection('spots');
 
       final existingSpots = await spotsCollection.get();
       if (existingSpots.docs.isEmpty) {
         final batch = _firestore.batch();
         for (int i = 1; i <= capacity; i++) {
-          final spotRef = spotsCollection.doc();
+          final spotRef = spotsCollection.doc('spot_$i');
           batch.set(spotRef, {
             'number': 'P$i',
             'isAvailable': true,
@@ -245,23 +271,39 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
 
       final locationData = await _locationService.getLocation().timeout(
-        Duration(seconds: 10),
-        onTimeout: () => throw Exception('Location request timed out'),
+        Duration(seconds: 30), // Increased timeout
+        onTimeout: () {
+          // Use last known location if available
+          if (_currentLocation != null) {
+            return LocationData.fromMap({
+              'latitude': _currentLocation!.latitude,
+              'longitude': _currentLocation!.longitude,
+              'accuracy': 0.0,
+            });
+          }
+          throw Exception('Location request timed out');
+        },
       );
 
       if (locationData.latitude != null && locationData.longitude != null) {
         setState(() {
-          _currentLocation = LatLng(locationData.latitude!, locationData.longitude!);
+          _currentLocation =
+              LatLng(locationData.latitude!, locationData.longitude!);
         });
       } else {
         throw Exception('Location data unavailable');
       }
     } catch (e) {
       print('Location error: $e');
-      // Show user-friendly error message
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to get location. Please check permissions.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Unable to get precise location. Using last known location or default.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
@@ -290,6 +332,162 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               parking['name'].toLowerCase().contains(query.toLowerCase()))
           .toList();
     });
+  }
+
+  Future<void> _checkUserBookingLimit() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final activeBookings = await _firestore
+          .collection('bookings')
+          .where('userId', isEqualTo: user.uid)
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      if (activeBookings.docs.length >= 3) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'You have reached the maximum limit of 3 active bookings'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error checking booking limit: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>> _checkParkingAvailability(String parkingId) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Must be authenticated');
+
+      // Check user's booking limit first
+      final userBookings = await _firestore
+          .collection('bookings')
+          .where('userId', isEqualTo: user.uid)
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      if (userBookings.docs.length >= 3) {
+        return {
+          'realAvailable': 0,
+          'reservedCount': 0,
+          'hasUserBooking': false,
+          'canBook': false,
+          'limitReached': true
+        };
+      }
+
+      // Get real-time counts
+      final parkingDoc = await _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .get();
+
+      if (!parkingDoc.exists) throw Exception('Parking not found');
+
+      final data = parkingDoc.data()!;
+      final totalCapacity = data['capacity'] ?? 0;
+
+      // Get active bookings count
+      final activeBookings = await _firestore
+          .collection('bookings')
+          .where('parkingId', isEqualTo: parkingId)
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      final actualAvailable = totalCapacity - activeBookings.docs.length;
+
+      // Update available count in Firestore
+      await _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .update({
+            'available': actualAvailable,
+            'lastUpdated': FieldValue.serverTimestamp()
+          });
+
+      return {
+        'realAvailable': actualAvailable,
+        'reservedCount': activeBookings.docs.length,
+        'hasUserBooking': userBookings.docs.any((doc) => doc.data()['parkingId'] == parkingId),
+        'canBook': actualAvailable > 0 && userBookings.docs.length < 3,
+        'limitReached': userBookings.docs.length >= 3
+      };
+    } catch (e) {
+      print('Error checking availability: $e');
+      return {
+        'realAvailable': 0,
+        'reservedCount': 0,
+        'hasUserBooking': false,
+        'canBook': false,
+        'limitReached': false
+      };
+    }
+  }
+
+  Widget _buildParkingMarker(Map<String, dynamic> parking) {
+    return StreamBuilder<DatabaseEvent>(
+      stream: _database.ref('spots/${parking['id']}').onValue,
+      builder: (context, snapshot) {
+        String status = parking['status'] ?? 'inactive';
+        Color markerColor = Colors.grey;
+
+        if (snapshot.hasData && snapshot.data?.snapshot.value != null) {
+          final spotsData =
+              snapshot.data?.snapshot.value as Map<dynamic, dynamic>;
+          final availableSpots = spotsData.values
+              .where((spot) =>
+                  spot is Map &&
+                  spot['status'] == 'available' &&
+                  !(spot['ignoreStatusUpdates'] ?? false))
+              .length;
+
+          if (status == 'active') {
+            markerColor = availableSpots > 0 ? Colors.green : Colors.red;
+          }
+        }
+
+        return GestureDetector(
+          onTap: () async {
+            final availability = await _checkParkingAvailability(parking['id']);
+            if (!availability['canBook']) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(availability['limitReached']
+                    ? 'You have reached the maximum limit of 3 active bookings'
+                    : availability['hasUserBooking']
+                        ? 'You already have an active booking'
+                        : 'No spots available at this time'),
+                backgroundColor: Colors.red,
+              ));
+              return;
+            }
+            _showParkingDetails(parking);
+          },
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: markerColor,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white, width: 2),
+            ),
+            child: Center(
+              child: Text(
+                'P',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -388,37 +586,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           MarkerLayer(
             markers: _filteredParkingLocations.map((parking) {
-              bool isAvailable = (parking['available'] ?? 0) > 0;
-              String status = parking['status'] ?? 'active';
-              Color markerColor = isAvailable && status == 'active'
-                  ? Colors.green
-                  : status != 'active'
-                      ? Colors.grey
-                      : Colors.red;
-
               return Marker(
                 point: parking['location'],
                 width: 40,
                 height: 40,
-                child: GestureDetector(
-                  onTap: () => _showParkingDetails(parking),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: markerColor,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                    child: Center(
-                      child: Text(
-                        'P',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+                child: _buildParkingMarker(parking),
               );
             }).toList(),
           ),
@@ -434,7 +606,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             color: Colors.white,
             width: 2,
           )),
-          onPressed: _navigateToQRCode, // Updated this line
+          onPressed: _navigateToQRCode,
           child: Icon(
             Icons.qr_code_scanner_rounded,
             color: Colors.white,
@@ -506,127 +678,101 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<Map<String, dynamic>> _checkExistingBookings(String parkingId) async {
+  void _showParkingDetails(Map<String, dynamic> parking) async {
     try {
-      User? user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw Exception('Must be logged in to view bookings');
-      }
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception('Must be authenticated');
 
-      // Check for any active bookings in this specific parking
-      final bookingSnapshot = await _firestore
+      final availability = await _checkParkingAvailability(parking['id']);
+      
+      // Check for existing booking in this parking
+      final existingBooking = await _firestore
           .collection('bookings')
           .where('userId', isEqualTo: user.uid)
-          .where('parkingId', isEqualTo: parkingId)
+          .where('parkingId', isEqualTo: parking['id'])
           .where('status', isEqualTo: 'active')
           .get();
 
-      List<String> spots = [];
-      for (var doc in bookingSnapshot.docs) {
-        spots.add(doc.data()['spotNumber'].toString());
+      final hasExistingBooking = existingBooking.docs.isNotEmpty;
+
+      if (!mounted) return;
+
+      String message = '';
+      if (availability['limitReached']) {
+        message = 'You have reached the maximum limit of 3 active bookings';
+      } else if (hasExistingBooking) {
+        message = 'You already have an active booking in this parking';
+      } else if (availability['realAvailable'] <= 0) {
+        message = 'No spots available at this time';
       }
 
-      return {
-        'count': bookingSnapshot.docs.length,
-        'spots': spots,
-        'hasActiveBooking': bookingSnapshot.docs.isNotEmpty,
-      };
-    } catch (e) {
-      print('Error checking existing bookings: $e');
-      return {
-        'count': 0, 
-        'spots': [], 
-        'hasActiveBooking': false
-      };
-    }
-  }
-
-  void _showParkingDetails(Map<String, dynamic> parking) async {
-    final capacity = parking['capacity'] ?? 0;
-    final available = parking['available'] ?? 0;
-    final price = parking['price'] ?? 'N/A';
-    final status = parking['status'] ?? 'inactive';
-    final parkingId = parking['id'];
-
-    // Check existing bookings first
-    final bookings = await _checkExistingBookings(parkingId);
-    
-    // If user already has a booking in this parking, show error
-    if (bookings['hasActiveBooking']) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('You already have an active booking in this parking'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 3),
-        ),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(parking['name'] ?? 'Unnamed Parking'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Capacity: $capacity spots'),
-            Text('Available: $available spots'),
-            Text('Price: $price'),
-            if (status != 'active')
-              Text('Status: $status', 
-                  style: TextStyle(color: Colors.red)),
-            if (bookings['count'] > 0) ...[
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(parking['name'] ?? 'Unnamed Parking'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Total Capacity: ${parking['capacity']} spots'),
               Text(
-                'Your current bookings in this parking:',
-                style: TextStyle(color: Colors.orange),
-              ),
-              Text('Spots: ${bookings['spots'].join(", ")}'),
-              Text(
-                'Maximum 1 booking allowed per parking',
+                'Available: ${availability['realAvailable']} spots',
                 style: TextStyle(
-                  color: Colors.red,
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic
+                    color: (availability['canBook'] && !hasExistingBooking) 
+                           ? Colors.green 
+                           : Colors.red,
+                    fontWeight: FontWeight.bold),
+              ),
+              Text('Price: ${parking['price']}'),
+              if (parking['status'] != 'active')
+                Text('Status: ${parking['status']}',
+                    style: TextStyle(color: Colors.red)),
+              if (message.isNotEmpty)
+                Text(
+                  message,
+                  style: TextStyle(color: Colors.red, fontSize: 12),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Close'),
+            ),
+            if (availability['canBook'] && 
+                !hasExistingBooking && 
+                parking['status'] == 'active')
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => SpotSelectionScreen(
+                        parkingId: parking['id'],
+                        parkingName: parking['name'],
+                        parkingData: parking,
+                      ),
+                    ),
+                  );
+                },
+                child: Text('Select Spot'),
+              ),
+            if (hasExistingBooking)
+              TextButton(
+                onPressed: null, // Disabled button
+                child: Text(
+                  'Already Booked',
+                  style: TextStyle(color: Colors.grey),
                 ),
               ),
-            ],
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-          if (available > 0 && status == 'active')
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => SpotSelectionScreen(
-                      parkingId: parkingId,
-                      parkingName: parking['name'] ?? 'Unnamed Parking',
-                      parkingData: parking,
-                    ),
-                  ),
-                );
-              },
-              child: Text('Select Spot'),
-            ),
-          if (bookings['hasActiveBooking'])
-            TextButton(
-              onPressed: null,
-              child: Text(
-                'Already have a booking',
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-        ],
-      ),
-    );
+      );
+    } catch (e) {
+      print('Error showing parking details: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading parking details')));
+    }
   }
 
   Future<void> _initializeApp() async {

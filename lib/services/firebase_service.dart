@@ -1,108 +1,476 @@
+import 'package:firebase_database/firebase_database.dart' as rtdb;
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 
-class FirebaseService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+class ParkingSpotService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseDatabase _database = FirebaseDatabase.instance;
 
-  // Authentication methods
-  Future<UserCredential> signInWithEmailAndPassword(String email, String password) async {
-    return await _auth.signInWithEmailAndPassword(email: email, password: password);
+  Future<void> initializeSpots(String parkingId, int capacity) async {
+    try {
+      // Initialize Firestore first
+      final spotsCollection = _firestore.collection('parking').doc(parkingId).collection('spots');
+      final existingSpots = await spotsCollection.get();
+      
+      if (existingSpots.docs.isEmpty) {
+        final batch = _firestore.batch();
+        
+        // Create spots in Realtime Database first
+        final realtimeRef = _database.ref('spots/$parkingId');
+        Map<String, dynamic> realtimeSpots = {};
+
+        for (int i = 1; i <= capacity; i++) {
+          String spotId = 'spot_$i'; // Use consistent IDs
+          
+          // Realtime Database spot
+          realtimeSpots[spotId] = {
+            'number': 'P$i',
+            'status': 'available',
+            'lastUpdated': ServerValue.timestamp,
+            'lastBookingId': '',
+            'lastUserId': '',
+            'ignoreStatusUpdates': false
+          };
+
+          // Firestore spot
+          final spotRef = spotsCollection.doc(spotId);
+          batch.set(spotRef, {
+            'number': 'P$i',
+            'isAvailable': true,
+            'type': 'standard',
+            'lastUpdated': FieldValue.serverTimestamp(),
+            'status': 'available'
+          });
+        }
+
+        // Commit both databases
+        await Future.wait([
+          realtimeRef.set(realtimeSpots),
+          batch.commit()
+        ]);
+      }
+
+      // Sync existing spots if needed
+      await syncSpots(parkingId);
+
+    } catch (e) {
+      print('Error initializing spots: $e');
+      throw e;
+    }
   }
 
-  Future<UserCredential> createUserWithEmailAndPassword(String email, String password, String userType) async {
-    UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
-      email: email,
-      password: password,
-    );
+  Future<void> syncSpots(String parkingId) async {
+    try {
+      final realtimeRef = _database.ref('spots/$parkingId');
+      final firestoreRef = _firestore.collection('parking').doc(parkingId).collection('spots');
 
-    // Create user document with required fields
-    await _firestore.collection('users').doc(userCredential.user!.uid).set({
-      'email': email,
-      'userType': userType,
-      'createdAt': FieldValue.serverTimestamp(),
+      // Get current state from both databases
+      final realtimeSnap = await realtimeRef.get();
+      final firestoreSnap = await firestoreRef.get();
+
+      if (!realtimeSnap.exists || firestoreSnap.docs.isEmpty) return;
+
+      final realtimeSpots = realtimeSnap.value as Map<dynamic, dynamic>;
+      final batch = _firestore.batch();
+
+      // Update Firestore spots based on Realtime Database
+      for (var doc in firestoreSnap.docs) {
+        final spotId = doc.id;
+        final realtimeSpot = realtimeSpots[spotId];
+        
+        if (realtimeSpot != null) {
+          batch.update(doc.reference, {
+            'isAvailable': realtimeSpot['status'] == 'available',
+            'status': realtimeSpot['status'],
+            'lastUpdated': FieldValue.serverTimestamp(),
+            'syncedFromRealtime': true
+          });
+        }
+      }
+
+      await batch.commit();
+    } catch (e) {
+      print('Error syncing spots: $e');
+    }
+  }
+
+  Future<bool> isSpotAvailable(String parkingId, String spotId) async {
+    try {
+      final results = await Future.wait([
+        _firestore
+            .collection('parking')
+            .doc(parkingId)
+            .collection('spots')
+            .doc(spotId)
+            .get(),
+        _database.ref('spots/$parkingId/$spotId').get()
+      ]);
+
+      final firestoreSpot = results[0] as DocumentSnapshot;
+      final realtimeSpot = results[1] as DataSnapshot;
+
+      if (!firestoreSpot.exists || !realtimeSpot.exists) return false;
+
+      final firestoreData = firestoreSpot.data() as Map<String, dynamic>;
+      final realtimeData = realtimeSpot.value as Map<dynamic, dynamic>;
+
+      return firestoreData['isAvailable'] == true && 
+             realtimeData['status'] == 'available' &&
+             !(realtimeData['ignoreStatusUpdates'] ?? false);
+
+    } catch (e) {
+      print('Error checking spot availability: $e');
+      return false;
+    }
+  }
+
+  Stream<DatabaseEvent> getSpotStatus(String parkingId, String spotId) {
+    return _database.ref('spots/$parkingId/$spotId').onValue;
+  }
+
+  Future<void> fixSpotPaths(String parkingId) async {
+    final oldRef = _database.ref();
+    final newRef = _database.ref().child('spots').child(parkingId);
+    
+    // Get all spots at root level
+    final snapshot = await oldRef.get();
+    if (!snapshot.exists) return;
+
+    final data = snapshot.value as Map<Object?, Object?>?;
+    if (data == null) return;
+
+    // Move spots to correct path
+    await Future.wait(data.entries.map((entry) async {
+      final spotId = entry.key.toString();
+      final spotData = entry.value as Map<Object?, Object?>?;
+      
+      if (spotData != null && !spotId.contains('/')) {
+        // Only move if it's a spot without proper path
+        await newRef.child(spotId).set(spotData);
+        await oldRef.child(spotId).remove();
+      }
+    }));
+  }
+
+  Future<bool> lockSpot(String parkingId, String spotId, String userId) async {
+    try {
+      // Update Firestore first
+      await FirebaseFirestore.instance
+          .collection('parking')
+          .doc(parkingId)
+          .collection('spots')
+          .doc(spotId)
+          .update({
+        'status': 'reserved',
+        'lastUserId': userId,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      });
+
+      // Then update Realtime Database
+      await FirebaseDatabase.instance
+          .ref('parking/$parkingId/spots/$spotId')
+          .update({
+        'status': 'reserved',
+        'lastUserId': userId,
+        'lastUpdated': ServerValue.timestamp,
+      });
+
+      return true;
+    } catch (e) {
+      print('Error locking spot: $e');
+      return false;
+    }
+  }
+
+  Future<void> handleSensorData(String parkingId, String spotId, bool isOccupied) async {
+    final spotRef = _database.ref().child('spots').child(parkingId).child(spotId);
+    final snapshot = await spotRef.get();
+    
+    if (!snapshot.exists) return;
+    
+    final spotData = Map<String, dynamic>.from(snapshot.value as Map);
+    // Only update status if spot is not reserved
+    if (spotData['isReserved'] != true) {
+      await spotRef.update({
+        'status': isOccupied ? 'occupied' : 'available',
+        'lastUpdated': ServerValue.timestamp,
+        'sensorUpdated': ServerValue.timestamp
+      });
+    }
+  }
+
+  Future<void> releaseReservation(String parkingId, String spotId) async {
+    final batch = _firestore.batch();
+    
+    // Update Firestore
+    final spotDocRef = _firestore
+        .collection('parking')
+        .doc(parkingId)
+        .collection('spots')
+        .doc(spotId);
+    
+    batch.update(spotDocRef, {
+      'isAvailable': true,
+      'isReserved': false,
+      'reservedBy': null,
+      'lastUpdated': FieldValue.serverTimestamp()
     });
 
-    return userCredential;
+    await batch.commit();
+
+    // Update Realtime Database
+    await _database
+        .ref()
+        .child('spots')
+        .child(parkingId)
+        .child(spotId)
+        .update({
+      'status': 'available',
+      'isReserved': false,
+      'lastUserId': null,
+      'lastUpdated': ServerValue.timestamp
+    });
   }
 
-  // Parking methods
-  Future<bool> createParking(Map<String, dynamic> parkingData) async {
+  Future<void> saveBookingData({
+    required String bookingId,
+    required Map<String, dynamic> bookingData,
+    required Map<String, dynamic> qrData,
+    required String userId,
+    required String parkingId,
+  }) async {
     try {
-      User? user = _auth.currentUser;
-      if (user == null) throw Exception('Not authenticated');
+      final batch = _firestore.batch();
 
-      DocumentReference parkingRef = await _firestore.collection('parking').add({
-        ...parkingData,
-        'ownerId': user.uid,
+      // Set booking with minimal required fields
+      final bookingRef = _firestore.collection('bookings').doc(bookingId);
+      batch.set(bookingRef, {
+        'parkingId': parkingId,
+        'spotId': bookingData['spotId'],
+        'userId': userId,
+        'status': 'active',
+        'timestamp': DateTime.now().toIso8601String(),
+        'spotNumber': bookingData['spotNumber'],
+        'parkingName': bookingData['parkingName'],
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      // Add reference to user's parkings
-      await _firestore
+      // Save QR data under user's collection with minimal fields
+      final userQRRef = _firestore
           .collection('users')
-          .doc(user.uid)
-          .collection('parkings')
-          .doc(parkingRef.id)
-          .set({
-        ...parkingData,
-        'parkingId': parkingRef.id,
+          .doc(userId)
+          .collection('qrcodes')
+          .doc(bookingId);
+      batch.set(userQRRef, {
+        'parkingId': parkingId,
+        'parkingName': bookingData['parkingName'],
+        'spotNumber': bookingData['spotNumber'],
+        'bookingId': bookingId,
+        'timestamp': DateTime.now().toIso8601String(),
+        'qrData': qrData['qrData'],
       });
 
-      return true;
+      // Save QR data under parking's collection with minimal fields
+      final parkingQRRef = _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .collection('qrcodes')
+          .doc(bookingId);
+      batch.set(parkingQRRef, {
+        'parkingId': parkingId,
+        'parkingName': bookingData['parkingName'],
+        'spotNumber': bookingData['spotNumber'],
+        'bookingId': bookingId,
+        'timestamp': DateTime.now().toIso8601String(),
+        'qrData': qrData['qrData'],
+        'userId': userId,
+      });
+
+      // Update parking availability with minimal fields
+      final parkingRef = _firestore.collection('parking').doc(parkingId);
+      batch.update(parkingRef, {
+        'available': FieldValue.increment(-1),
+        'lastUpdated': FieldValue.serverTimestamp(),
+      });
+
+      // Commit batch
+      await batch.commit();
     } catch (e) {
-      print('Error creating parking: $e');
-      return false;
+      print('Error saving booking data: $e');
+      throw Exception('Failed to save booking data');
     }
   }
 
-  // Booking methods
-  Future<bool> createBooking(String parkingId) async {
+  Future<void> updateSpotStatus(
+    String parkingId,
+    String spotId,
+    String status,
+    Map<String, dynamic> additionalData,
+  ) async {
+    final ref = _database.ref().child('spots').child(parkingId).child(spotId);
+    await ref.update({
+      'status': status,
+      'lastUpdated': ServerValue.timestamp,
+      ...additionalData,
+    });
+  }
+
+  Future<void> unlockSpot(String parkingId, String spotId) async {
     try {
-      User? user = _auth.currentUser;
-      if (user == null) throw Exception('Not authenticated');
+      final dbRef = FirebaseDatabase.instance
+          .ref()
+          .child('parking')
+          .child(parkingId)
+          .child('spots')
+          .child(spotId);
 
-      await _firestore.runTransaction((transaction) async {
-        DocumentReference parkingRef = _firestore.collection('parking').doc(parkingId);
-        DocumentSnapshot parkingDoc = await transaction.get(parkingRef);
-
-        if (!parkingDoc.exists) throw Exception('Parking not found');
-
-        Map<String, dynamic> parkingData = parkingDoc.data() as Map<String, dynamic>;
-        int available = parkingData['available'] ?? 0;
-
-        if (available <= 0) throw Exception('No spots available');
-
-        // Create booking
-        DocumentReference bookingRef = _firestore.collection('bookings').doc();
-        transaction.set(bookingRef, {
-          'parkingId': parkingId,
-          'userId': user.uid,
-          'status': 'pending',
-          'timestamp': FieldValue.serverTimestamp(),
-        });
-
-        // Update parking availability
-        transaction.update(parkingRef, {
-          'available': available - 1,
-        });
+      await dbRef.update({
+        'status': 'available',
+        'lastAction': 'cancelled',
+        'lastUpdated': ServerValue.timestamp,
       });
 
-      return true;
+      // Also update Firestore
+      await FirebaseFirestore.instance
+          .collection('parking')
+          .doc(parkingId)
+          .collection('spots')
+          .doc(spotId)
+          .update({
+        'isAvailable': true,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'lastAction': 'cancelled'
+      });
     } catch (e) {
-      print('Error creating booking: $e');
-      return false;
+      print('Error unlocking spot: $e');
+      throw e;
     }
   }
 
-  // User methods
-  Future<bool> isParkingOwner(String userId) async {
+  Future<void> cleanupExpiredReservations() async {
     try {
-      DocumentSnapshot userDoc = await _firestore.collection('users').doc(userId).get();
-      return userDoc.exists && userDoc.get('userType') == 'Parking Owner';
+      final now = DateTime.now();
+      
+      // Get all active bookings
+      final activeBookings = await _firestore
+          .collection('bookings')
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      // Filter expired bookings locally
+      final expiredBookings = activeBookings.docs.where((doc) {
+        final expiryTime = doc.data()['expiryTime'] as Timestamp?;
+        final arrivalTime = doc.data()['arrivalTime'] as Timestamp?;
+        return (expiryTime?.toDate().isBefore(now) ?? false) || 
+               (arrivalTime?.toDate().isBefore(now.subtract(Duration(minutes: 15))) ?? false);
+      });
+
+      for (var doc in expiredBookings) {
+        final bookingData = doc.data();
+        final parkingId = bookingData['parkingId'];
+        final spotId = bookingData['spotId'];
+        
+        // Check sensor status from Realtime Database
+        final sensorSnapshot = await _database
+            .ref('spots/$parkingId/$spotId')
+            .get();
+
+        if (sensorSnapshot.exists) {
+          final spotData = Map<String, dynamic>.from(sensorSnapshot.value as Map);
+          final bool isSensorDetected = spotData['sensorDetected'] ?? false;
+          
+          // Only cancel if no vehicle is detected
+          if (!isSensorDetected) {
+            await _cancelExpiredBooking(
+              doc.id,
+              parkingId,
+              spotId,
+              bookingData['userId'],
+            );
+          }
+        }
+      }
     } catch (e) {
-      print('Error checking user type: $e');
-      return false;
+      print('Error cleaning up expired reservations: $e');
+    }
+  }
+
+  Future<void> _cancelExpiredBooking(
+    String bookingId,
+    String parkingId,
+    String spotId,
+    String userId,
+  ) async {
+    try {
+      final batch = _firestore.batch();
+
+      // Update booking status
+      final bookingRef = _firestore.collection('bookings').doc(bookingId);
+      batch.update(bookingRef, {
+        'status': 'expired',
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'reason': 'No vehicle detected at reservation time'
+      });
+
+      // Update spot in Firestore
+      final spotRef = _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .collection('spots')
+          .doc(spotId);
+      
+      batch.update(spotRef, {
+        'status': 'available',
+        'isAvailable': true,
+        'lastUserId': null,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'ignoreStatusUpdates': false,
+        'lastBookingId': null
+      });
+
+      // Increment available spots in parking
+      final parkingRef = _firestore.collection('parking').doc(parkingId);
+      batch.update(parkingRef, {
+        'available': FieldValue.increment(1),
+        'lastUpdated': FieldValue.serverTimestamp(),
+      });
+
+      // Commit Firestore changes
+      await batch.commit();
+
+      // Update Realtime Database
+      await _database.ref('spots/$parkingId/$spotId').update({
+        'status': 'available',
+        'lastUserId': null,
+        'lastBookingId': null,
+        'lastUpdated': ServerValue.timestamp,
+        'ignoreStatusUpdates': false,
+        'sensorDetected': false,
+        'lastSensorUpdate': ServerValue.timestamp
+      });
+
+      // Clean up QR codes
+      await Future.wait([
+        _firestore
+            .collection('users')
+            .doc(userId)
+            .collection('qrcodes')
+            .doc(bookingId)
+            .delete(),
+        _firestore
+            .collection('parking')
+            .doc(parkingId)
+            .collection('qrcodes')
+            .doc(bookingId)
+            .delete(),
+      ]);
+
+      // Send notification if implemented
+      // await _notifyUser(userId, 'Your reservation has expired due to no vehicle detection.');
+
+    } catch (e) {
+      print('Error canceling expired booking: $e');
+      throw e;
     }
   }
 }

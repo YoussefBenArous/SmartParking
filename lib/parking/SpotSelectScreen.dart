@@ -1,10 +1,14 @@
 import 'dart:convert';
-
+import 'dart:async';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_parking/QRcode/QRCodeScreen.dart';
 import 'package:uuid/uuid.dart';
+import '../services/firebase_service.dart';
+import '../widgets/ParkingSlot.dart';
+import '../HomePage/userpages/BookingPage.dart';
 
 class SpotSelectionScreen extends StatefulWidget {
   final String parkingId;
@@ -24,14 +28,87 @@ class SpotSelectionScreen extends StatefulWidget {
 
 class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseDatabase _database = FirebaseDatabase.instance;
+  final ParkingSpotService _spotService = ParkingSpotService();
   bool _isBooking = false;
+  List<Timer> _periodicTimers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeParkingSpots();
+    _startCleanupTimer();
+  }
+
+  void _startCleanupTimer() {
+    // Check for expired reservations every minute
+    Timer.periodic(Duration(minutes: 1), (timer) {
+      _checkAndCleanupExpiredSpots();
+    });
+  }
+
+  Future<void> _checkAndCleanupExpiredSpots() async {
+    try {
+      await _spotService.cleanupExpiredReservations();
+    } catch (e) {
+      print('Error checking expired spots: $e');
+    }
+  }
+
+  Future<void> _initializeParkingSpots() async {
+    try {
+      await _checkExistingBooking().then((canBook) {
+        if (!canBook && mounted) {
+          Navigator.pop(context);
+          return;
+        }
+      });
+
+      // Get parking details including capacity
+      final parkingDoc = await _firestore
+          .collection('parking')
+          .doc(widget.parkingId)
+          .get();
+
+      if (!parkingDoc.exists) {
+        throw Exception('Parking not found');
+      }
+
+      final capacity = parkingDoc.data()?['capacity'] ?? 0;
+
+      // Initialize spots in both databases
+      await _spotService.initializeSpots(widget.parkingId, capacity);
+
+      // Verify initialization
+      final spotsSnapshot = await _firestore
+          .collection('parking')
+          .doc(widget.parkingId)
+          .collection('spots')
+          .get();
+
+      if (spotsSnapshot.docs.isEmpty && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error initializing parking spots')));
+        Navigator.pop(context);
+        return;
+      }
+
+    } catch (e) {
+      print('Error initializing parking spots: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error loading parking spots')));
+        Navigator.pop(context);
+      }
+    }
+  }
 
   Future<bool> _checkExistingBooking() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) throw 'Must be logged in to book spots';
 
-      // Check specifically for active bookings in this parking
+      // Check for any active bookings in this parking
       final existingBookings = await _firestore
           .collection('bookings')
           .where('userId', isEqualTo: user.uid)
@@ -44,8 +121,26 @@ class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('You already have an active booking in this parking'),
             backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
           ));
+          Navigator.pop(context); // Return to previous screen
+        }
+        return false;
+      }
+
+      // Check total active bookings across all parkings
+      final allActiveBookings = await _firestore
+          .collection('bookings')
+          .where('userId', isEqualTo: user.uid)
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      if (allActiveBookings.docs.length >= 3) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('You have reached the maximum limit of 3 active bookings'),
+            backgroundColor: Colors.red,
+          ));
+          Navigator.pop(context);
         }
         return false;
       }
@@ -57,17 +152,6 @@ class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
     }
   }
 
-  @override
-  void initState() {
-    super.initState();
-    // Check for existing booking when screen opens
-    _checkExistingBooking().then((canBook) {
-      if (!canBook && mounted) {
-        Navigator.pop(context);  // Return to previous screen if can't book
-      }
-    });
-  }
-
   Future<void> _bookSpot(String spotId, String spotNumber) async {
     if (_isBooking) return;
     setState(() => _isBooking = true);
@@ -76,195 +160,159 @@ class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
       final User? user = FirebaseAuth.instance.currentUser;
       if (user == null) throw Exception('Must be logged in to book');
 
-      final String bookingId = const Uuid().v4();
-      final DateTime now = DateTime.now();
+      // Check both Realtime Database and Firestore for spot availability
+      final spotRealtimeSnapshot = await _database
+          .ref('spots/${widget.parkingId}/$spotId')
+          .get();
+      
+      final spotFirestoreSnapshot = await _firestore
+          .collection('parking')
+          .doc(widget.parkingId)
+          .collection('spots')
+          .doc(spotId)
+          .get();
 
-      // Create all required data
-      final bookingData = {
-        'parkingId': widget.parkingId,
-        'spotId': spotId,
-        'userId': user.uid,
-        'status': 'active',
-        'timestamp': now.toIso8601String(),
-        'spotNumber': int.parse(spotNumber.replaceAll(RegExp(r'[^0-9]'), '')),
-        'parkingName': widget.parkingName,
-      };
+      // Verify spot is available in both databases
+      bool isAvailableRealtime = spotRealtimeSnapshot.value != null &&
+          (spotRealtimeSnapshot.value as Map)['status'] == 'available' &&
+          !((spotRealtimeSnapshot.value as Map)['ignoreStatusUpdates'] ?? false);
 
-      final qrData = {
-        'parkingId': widget.parkingId,
-        'parkingName': widget.parkingName,
-        'spotNumber': int.parse(spotNumber.replaceAll(RegExp(r'[^0-9]'), '')),
-        'bookingId': bookingId,
-        'timestamp': now.toIso8601String(),
-        'userId': user.uid,
-        'qrData': jsonEncode({
-          'bookingId': bookingId,
-          'userId': user.uid,
-          'timestamp': now.toIso8601String(),
-        })
-      };
+      bool isAvailableFirestore = spotFirestoreSnapshot.exists &&
+          spotFirestoreSnapshot.data()?['isAvailable'] == true;
 
-      // Single atomic transaction
-      await _firestore.runTransaction((transaction) async {
-        // 1. Check spot availability
-        final spotDoc = await transaction.get(
-          _firestore.collection('parking').doc(widget.parkingId).collection('spots').doc(spotId)
-        );
+      if (!isAvailableRealtime || !isAvailableFirestore) {
+        throw Exception('Spot is no longer available');
+      }
 
-        if (!spotDoc.exists || !spotDoc.data()?['isAvailable']) {
-          throw Exception('Spot is no longer available');
-        }
+      // Lock the spot in both databases
+      final batch = _firestore.batch();
 
-        // 2. Check for existing bookings
-        final existingBookings = await _firestore
-            .collection('bookings')
-            .where('userId', isEqualTo: user.uid)
-            .where('parkingId', isEqualTo: widget.parkingId)
-            .where('status', isEqualTo: 'active')
-            .get();
+      // Update Realtime Database
+      await _database
+          .ref('spots/${widget.parkingId}/$spotId')
+          .update({
+            'status': 'reserved',
+            'lastUserId': user.uid,
+            'lastUpdated': ServerValue.timestamp,
+            'ignoreStatusUpdates': true, // Prevent sensor updates during reservation
+          });
 
-        if (existingBookings.docs.isNotEmpty) {
-          throw Exception('Already have an active booking in this parking');
-        }
+      // Update Firestore spot
+      final spotRef = _firestore
+          .collection('parking')
+          .doc(widget.parkingId)
+          .collection('spots')
+          .doc(spotId);
 
-        // 3. Create booking
-        final bookingRef = _firestore.collection('bookings').doc(bookingId);
-        transaction.set(bookingRef, bookingData);
-
-        // 4. Update spot
-        transaction.update(spotDoc.reference, {
-          'isAvailable': false,
-          'lastUpdated': FieldValue.serverTimestamp(),
-          'lastBookingId': bookingId,
-          'lastUserId': user.uid,
-          'lastAction': 'booked'
-        });
-
-        // 5. Update parking availability
-        final parkingRef = _firestore.collection('parking').doc(widget.parkingId);
-        transaction.update(parkingRef, {
-          'available': FieldValue.increment(-1)
-        });
-
-        // 6. Create QR codes
-        transaction.set(
-          _firestore.collection('users').doc(user.uid).collection('qrcodes').doc(bookingId),
-          qrData
-        );
-
-        transaction.set(
-          _firestore.collection('parking').doc(widget.parkingId).collection('qrcodes').doc(bookingId),
-          qrData
-        );
+      batch.update(spotRef, {
+        'status': 'reserved',
+        'isAvailable': false,
+        'lastUserId': user.uid,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'ignoreStatusUpdates': true
       });
 
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => QRCodeScreen(
-              spotNumber: int.parse(spotNumber.replaceAll(RegExp(r'[^0-9]'), '')),
-              parkingId: widget.parkingId,
-              bookingId: bookingId,
-              parkingName: widget.parkingName,
-              existingQRData: qrData,
-            ),
+      await batch.commit();
+
+      // Navigate to booking screen
+      final bookingResult = await Navigator.push<Map<String, dynamic>>(
+        context,
+        MaterialPageRoute(
+          builder: (context) => BookingPage(
+            slotId: spotId,
+            slotName: spotNumber,
+            parkingId: widget.parkingId,
+            parkingName: widget.parkingName,
           ),
-        );
+        ),
+      );
+
+      if (bookingResult == null || bookingResult['success'] != true) {
+        // Reset spot status if booking failed
+        await Future.wait([
+          _database
+              .ref('spots/${widget.parkingId}/$spotId')
+              .update({
+                'status': 'available',
+                'lastUserId': null,
+                'lastUpdated': ServerValue.timestamp,
+                'ignoreStatusUpdates': false
+              }),
+          spotRef.update({
+            'status': 'available',
+            'isAvailable': true,
+            'lastUserId': null,
+            'lastUpdated': FieldValue.serverTimestamp(),
+            'ignoreStatusUpdates': false
+          })
+        ]);
       }
     } catch (e) {
-      print('Booking error: $e');
+      print('Error booking spot: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(e.toString().replaceAll('Exception: ', '')),
           backgroundColor: Colors.red,
         ));
       }
+      // Reset spot status on error
+      await Future.wait([
+        _database
+            .ref('spots/${widget.parkingId}/$spotId')
+            .update({
+              'status': 'available',
+              'lastUserId': null,
+              'lastUpdated': ServerValue.timestamp,
+              'ignoreStatusUpdates': false
+            }),
+        _firestore
+            .collection('parking')
+            .doc(widget.parkingId)
+            .collection('spots')
+            .doc(spotId)
+            .update({
+              'status': 'available',
+              'isAvailable': true,
+              'lastUserId': null,
+              'lastUpdated': FieldValue.serverTimestamp(),
+              'ignoreStatusUpdates': false
+            })
+      ]);
     } finally {
       if (mounted) setState(() => _isBooking = false);
     }
   }
 
-  Future<void> _handleSpotSelection(String spotId, String spotNumber) async {
+  Future<bool> _isSpotOccupied(String spotId) async {
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) throw 'Must be logged in to book spots';
-
-      // Create booking document with all required fields matching security rules
-      final bookingData = {
-        'userId': user.uid,
-        'parkingId': widget.parkingId,
-        'spotId': spotId,
-        'spotNumber': spotNumber,
-        'status': 'active',
-        'timestamp': FieldValue.serverTimestamp(),
-        'parkingName': widget.parkingName,
-      };
-
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        // Create the booking
-        final bookingRef = FirebaseFirestore.instance
+      final results = await Future.wait([
+        // Check active bookings
+        _firestore
             .collection('bookings')
-            .doc();
+            .where('spotId', isEqualTo: spotId)
+            .where('parkingId', isEqualTo: widget.parkingId)
+            .where('status', isEqualTo: 'active')
+            .get(),
+        // Check realtime database status
+        _database.ref('spots/${widget.parkingId}/$spotId').get(),
+      ]);
 
-        // Check the spot first
-        final spotDoc = await transaction.get(
-          FirebaseFirestore.instance
-            .collection('parking')
-            .doc(widget.parkingId)
-            .collection('spots')
-            .doc(spotId)
-        );
+      final activeBookings = results[0] as QuerySnapshot;
+      final realtimeStatus = results[1] as DataSnapshot;
 
-        if (!spotDoc.exists || !spotDoc.data()?['isAvailable']) {
-          throw 'Spot is no longer available';
-        }
-
-        // Update spot with all required fields
-        transaction.update(spotDoc.reference, {
-          'isAvailable': false,
-          'lastUpdated': FieldValue.serverTimestamp(),
-          'lastBookingId': bookingRef.id,
-          'lastUserId': user.uid,
-          'lastAction': 'booked', // Add this required field
-        });
-
-        transaction.set(bookingRef, bookingData);
-
-        // Update parking availability
-        transaction.update(
-          FirebaseFirestore.instance.collection('parking').doc(widget.parkingId),
-          {
-            'available': FieldValue.increment(-1)
-          }
-        );
-
-        // Only proceed to QR code screen after successful transaction
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => QRCodeScreen(
-                spotNumber: int.parse(spotNumber.replaceAll('P', '')),
-                parkingId: widget.parkingId,
-                bookingId: bookingRef.id,
-                parkingName: widget.parkingName,
-              ),
-            ),
-          );
-        }
-      });
-
-    } catch (e) {
-      print('Booking error: $e'); // Add detailed error logging
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
+      if (activeBookings.docs.isNotEmpty) return true;
+      
+      if (realtimeStatus.exists) {
+        final spotData = Map<String, dynamic>.from(realtimeStatus.value as Map);
+        return spotData['status'] == 'occupied' || 
+               spotData['status'] == 'reserved' ||
+               (spotData['lastUserId'] != null && spotData['lastUserId'].toString().isNotEmpty);
       }
+
+      return false;
+    } catch (e) {
+      print('Error checking spot occupation: $e');
+      return false;
     }
   }
 
@@ -279,55 +327,103 @@ class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
     return Scaffold(
       appBar: AppBar(title: Text(widget.parkingName)),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('parking').doc(widget.parkingId).collection('spots').snapshots(),
+        stream: _firestore
+            .collection('parking')
+            .doc(widget.parkingId)
+            .collection('spots')
+            .snapshots(),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) return Center(child: CircularProgressIndicator());
+          if (!snapshot.hasData) {
+            return Center(child: CircularProgressIndicator());
+          }
 
-          var spots = snapshot.data!.docs;
-          if (spots.isEmpty) return Center(child: Text("No spots available"));
+          return StreamBuilder<DatabaseEvent>(
+            stream: _database.ref('spots/${widget.parkingId}').onValue,
+            builder: (context, realtimeSnapshot) {
+              return StreamBuilder<QuerySnapshot>(
+                stream: _firestore
+                    .collection('bookings')
+                    .where('parkingId', isEqualTo: widget.parkingId)
+                    .where('status', isEqualTo: 'active')
+                    .snapshots(),
+                builder: (context, bookingsSnapshot) {
+                  var spots = snapshot.data!.docs;
+                  Map<String, dynamic>? realtimeData;
+                  Map<String, dynamic> bookingsMap = {};
 
-          return GridView.builder(
-            padding: EdgeInsets.all(16),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-            ),
-            itemCount: spots.length,
-            itemBuilder: (context, index) {
-              var spot = spots[index].data() as Map<String, dynamic>;
-              String spotNumber = extractSpotNumber(spot['number']);
-              return GestureDetector(
-                onTap: spot['isAvailable'] && !_isBooking 
-                    ? () async {
-                        final canBook = await _checkExistingBooking();
-                        if (!canBook) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: Text('You already have a booking in this parking'),
-                            backgroundColor: Colors.red,
-                          ));
-                          return;
-                        }
-                        _bookSpot(spots[index].id, spotNumber);
+                  // Process realtime data
+                  if (realtimeSnapshot.hasData && realtimeSnapshot.data?.snapshot.value != null) {
+                    realtimeData = Map<String, dynamic>.from(realtimeSnapshot.data!.snapshot.value as Map);
+                  }
+
+                  // Process bookings data
+                  if (bookingsSnapshot.hasData) {
+                    for (var doc in bookingsSnapshot.data!.docs) {
+                      final data = doc.data() as Map<String, dynamic>;
+                      if (data['spotId'] != null) {
+                        bookingsMap[data['spotId']] = data;
                       }
-                    : null,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: spot['isAvailable'] ? Colors.green : Colors.grey,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Center(
-                    child: Text(
-                      spotNumber,
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    }
+                  }
+
+                  return GridView.builder(
+                    padding: EdgeInsets.all(16),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 16,
+                      childAspectRatio: 1.5,
                     ),
-                  ),
-                ),
+                    itemCount: spots.length,
+                    itemBuilder: (context, index) {
+                      var spot = spots[index].data() as Map<String, dynamic>;
+                      String spotId = spots[index].id;
+
+                      bool isOccupied = false;
+                      DateTime? reservationExpiry;
+
+                      // Check realtime status
+                      if (realtimeData != null && realtimeData[spotId] != null) {
+                        final realtimeSpot = realtimeData[spotId];
+                        isOccupied = realtimeSpot['status'] == 'occupied' ||
+                                   realtimeSpot['status'] == 'reserved';
+                      }
+
+                      // Check bookings
+                      if (bookingsMap.containsKey(spotId)) {
+                        isOccupied = true;
+                        final booking = bookingsMap[spotId];
+                        if (booking['expiryTime'] != null) {
+                          reservationExpiry = (booking['expiryTime'] as Timestamp).toDate();
+                        }
+                      }
+
+                      return ParkingSlot(
+                        slotName: spot['number'],
+                        slotId: spotId,
+                        isBooked: isOccupied,
+                        isReserved: isOccupied,
+                        time: '',
+                        onTap: isOccupied ? null : () => _bookSpot(spotId, spot['number']),
+                        reservationExpiry: reservationExpiry,
+                      );
+                    },
+                  );
+                },
               );
             },
           );
         },
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    // Cancel any active timers
+    for (var timer in _periodicTimers) {
+      timer.cancel();
+    }
+    super.dispose();
   }
 }

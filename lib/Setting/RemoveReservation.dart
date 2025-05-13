@@ -218,7 +218,7 @@ class _RemoveReservationState extends State<RemoveReservation> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0XFF0079C0),
-      extendBodyBehindAppBar: true,
+      extendBody: true,
       appBar: AppBar(
         backgroundColor: Color(0XFF0079C0),
         leading: IconButton(
@@ -236,23 +236,34 @@ class _RemoveReservationState extends State<RemoveReservation> {
         centerTitle: true,
         toolbarHeight: 100,
       ),
-      body: _isLoading
-          ? Center(child: CircularProgressIndicator(color: Colors.white))
-          : Container(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-              child: _userBookings.isEmpty
-                  ? Center(
-                      child: Text(
-                        "No active reservations found.",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: _userBookings.length,
-                      itemBuilder: (context, index) =>
-                          _buildParkingSection(_userBookings[index]),
-                    ),
-            ),
+      body: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(50),
+            topRight: Radius.circular(50),
+          ),
+        ),
+        child: 
+          _isLoading
+              ? Center(child: CircularProgressIndicator(color: Colors.black))
+              : Container(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                  child: _userBookings.isEmpty
+                      ? Center(
+                          child: Text(
+                            "No active reservations found.",
+                            style: TextStyle(color: Colors.black, fontSize: 16),
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _userBookings.length,
+                          itemBuilder: (context, index) =>
+                              _buildParkingSection(_userBookings[index]),
+                        ),
+                ),
+        
+      ),
     );
   }
 }

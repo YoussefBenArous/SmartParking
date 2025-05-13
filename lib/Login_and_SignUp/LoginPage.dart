@@ -41,55 +41,40 @@ class _LoginPageState extends State<LoginPage> {
         password: _passwordController.text,
       );
 
-      // ✅ Check if authentication was successful
       if (userCredential.user != null) {
-        print("✅ Login successful! UID: ${userCredential.user!.uid}");
-
-        // Fetch user data from Firestore
         final userDoc = await FirebaseFirestore.instance
             .collection('users')
             .doc(userCredential.user!.uid)
             .get();
 
         if (userDoc.exists) {
-          print("✅ User document found in Firestore.");
           final userData = userDoc.data();
-          final userRole = userData?['userType']; // Make sure it's 'userType'
+          final userRole = userData?['userType'];
 
           if (userRole == 'User') {
-            print("✅ Navigating to Home Page.");
             if (!mounted) return;
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(builder: (context) => const HomePage()),
             );
           } else if (userRole == 'Parking Owner') {
-            bool hasParking = await ParkingOwnerService.hasExistingParking();
+            // Check if owner has any existing parking
+            final existingParkings = await FirebaseFirestore.instance
+                .collection('parking')
+                .where('ownerId', isEqualTo: userCredential.user!.uid)
+                .limit(1)
+                .get();
+
+            if (!mounted) return;
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (context) => hasParking 
+                builder: (context) => existingParkings.docs.isNotEmpty 
                     ? ParkingOwnerDashboard()
                     : ParkingAddPage(),
               ),
             );
-          } else {
-            print("⚠️ Unrecognized user role: $userRole");
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Unrecognized user role.'),
-                backgroundColor: Colors.red,
-              ),
-            );
           }
-        } else {
-          print("❌ User document not found in Firestore!");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('User document not found.'),
-              backgroundColor: Colors.red,
-            ),
-          );
         }
       }
     } on FirebaseAuthException catch (e) {

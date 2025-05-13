@@ -28,8 +28,8 @@ class _MultiQRCodeState extends State<MultiQRCode> {
     try {
       if (user == null) throw Exception('Must be logged in to view QR codes');
 
-      // Query only active bookings as per rules
-      final bookingsSnapshot = await _firestore
+      // Wait for all bookings query
+      final bookingsQuery = await _firestore
           .collection('bookings')
           .where('userId', isEqualTo: user?.uid)
           .where('status', isEqualTo: 'active')
@@ -37,51 +37,64 @@ class _MultiQRCodeState extends State<MultiQRCode> {
 
       final parkingBookings = <String, List<Map<String, dynamic>>>{};
 
-      final futures = bookingsSnapshot.docs.map((doc) async {
-        final data = doc.data();
-        final parkingId = data['parkingId'];
-
-        // User QR codes - matches rule: allow read if request.auth.uid == userId
-        final qrDoc = await _firestore
+      // Process each booking
+      for (var bookingDoc in bookingsQuery.docs) {
+        final bookingData = bookingDoc.data();
+        final parkingId = bookingData['parkingId'] as String;
+        
+        // Get QR code from both user and parking collections
+        final userQrQuery = await _firestore
             .collection('users')
             .doc(user?.uid)
             .collection('qrcodes')
-            .doc(doc.id)
+            .doc(bookingDoc.id)
             .get();
 
-        final parkingDoc = await _firestore.collection('parking').doc(parkingId).get();
+        final parkingQrQuery = await _firestore
+            .collection('parking')
+            .doc(parkingId)
+            .collection('qrcodes')
+            .doc(bookingDoc.id)
+            .get();
 
-        if (parkingDoc.exists) {
-          // Convert timestamp if it exists, otherwise use current time
-          final timestamp = data['timestamp'] is Timestamp 
-              ? data['timestamp'] as Timestamp
-              : Timestamp.now();
+        // Use either QR code data that exists
+        final qrData = userQrQuery.exists ? userQrQuery.data() : 
+                      parkingQrQuery.exists ? parkingQrQuery.data() : null;
 
-          parkingBookings.putIfAbsent(parkingId, () => []).add({
-            'bookingId': doc.id,
-            'spotNumber': data['spotNumber'],
-            'parkingName': data['parkingName'],
-            'parkingId': parkingId,
-            'hasQR': qrDoc.exists,
-            'qrData': qrDoc.data(),
-            'timestamp': timestamp, // Use the converted timestamp
-          });
+        if (bookingData['expiryTime'] != null && 
+            (bookingData['expiryTime'] as Timestamp).toDate().isBefore(DateTime.now())) {
+          await _cancelExpiredBooking(bookingDoc.id, bookingData);
+          continue;
         }
-      }).toList();
 
-      await Future.wait(futures);
-
-      final organizedBookings = parkingBookings.entries.map((entry) {
-        return {
-          'parkingId': entry.key,
-          'parkingName': entry.value.first['parkingName'],
-          'bookings': entry.value,
+        final booking = {
+          'bookingId': bookingDoc.id,
+          'spotNumber': bookingData['spotNumber'],
+          'parkingName': bookingData['parkingName'] ?? 'Unknown Parking',
+          'parkingId': parkingId,
+          'hasQR': qrData != null,
+          'qrData': qrData,
+          'timestamp': bookingData['createdAt'],
+          'arrivalTime': bookingData['arrivalTime'],
+          'expiryTime': bookingData['expiryTime'],
+          'spotId': bookingData['spotId'],
         };
-      }).toList();
 
+        parkingBookings
+            .putIfAbsent(parkingId, () => [])
+            .add(booking);
+      }
+
+      // Update UI
       if (mounted) {
         setState(() {
-          _userQRCodes = organizedBookings;
+          _userQRCodes = parkingBookings.entries.map((entry) {
+            return {
+              'parkingId': entry.key,
+              'parkingName': entry.value.first['parkingName'],
+              'bookings': entry.value,
+            };
+          }).toList();
           _isLoading = false;
         });
       }
@@ -96,35 +109,93 @@ class _MultiQRCodeState extends State<MultiQRCode> {
     }
   }
 
+  Future<void> _cancelExpiredBooking(String bookingId, Map<String, dynamic> bookingData) async {
+    try {
+      final batch = _firestore.batch();
+
+      // Update spot status in Firestore
+      final spotRef = _firestore
+          .collection('parking')
+          .doc(bookingData['parkingId'])
+          .collection('spots')
+          .doc(bookingData['spotId']);
+      
+      batch.update(spotRef, {
+        'isAvailable': true,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'status': 'available'
+      });
+
+      // Update booking status
+      final bookingRef = _firestore.collection('bookings').doc(bookingId);
+      batch.update(bookingRef, {
+        'status': 'cancelled',
+        'cancelReason': 'expired',
+        'cancelledAt': FieldValue.serverTimestamp()
+      });
+
+      // Delete QR codes
+      final userQRRef = _firestore
+          .collection('users')
+          .doc(user?.uid)
+          .collection('qrcodes')
+          .doc(bookingId);
+      batch.delete(userQRRef);
+
+      final parkingQRRef = _firestore
+          .collection('parking')
+          .doc(bookingData['parkingId'])
+          .collection('qrcodes')
+          .doc(bookingId);
+      batch.delete(parkingQRRef);
+
+      await batch.commit();
+    } catch (e) {
+      print('Error cancelling expired booking: $e');
+    }
+  }
+
   Widget _buildBookingCard(Map<String, dynamic> booking) {
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Spot ${booking['spotNumber']}'),
             const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => QRCodeScreen(
-                      spotNumber: booking['spotNumber'],
-                      parkingId: booking['parkingId'],
-                      bookingId: booking['bookingId'],
-                      parkingName: booking['parkingName'],
-                      existingQRData: booking['qrData'],
+            if (booking['hasQR'])
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => QRCodeScreen(
+                        spotNumber: booking['spotNumber'],
+                        parkingId: booking['parkingId'],
+                        bookingId: booking['bookingId'],
+                        parkingName: booking['parkingName'],
+                        existingQRData: booking['qrData'],
+                        arrivalTime: booking['arrivalTime']?.toDate(),
+                      ),
                     ),
-                  ),
-                );
-              },
-              child: const Text('View QR Code'),
+                  );
+                },
+                child: const Text('View QR Code'),
+              )
+            else
+              ElevatedButton(
+                onPressed: () => _generateQRCode(booking),
+                child: const Text('Generate QR Code'),
+              ),
+            Text(
+              'Arrival: ${_formatTimestamp(booking['arrivalTime'])}',
+              style: const TextStyle(fontSize: 12),
             ),
             Text(
-              'Booked: ${_formatTimestamp(booking['timestamp'])}',
-              style: const TextStyle(fontSize: 12),
+              'Expires: ${_formatTimestamp(booking['expiryTime'])}',
+              style: const TextStyle(fontSize: 12, color: Colors.red),
             ),
           ],
         ),
@@ -157,13 +228,34 @@ class _MultiQRCodeState extends State<MultiQRCode> {
     return '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute}';
   }
 
+  Future<void> _generateQRCode(Map<String, dynamic> booking) async {
+    try {
+      final qrScreen = QRCodeScreen(
+        spotNumber: booking['spotNumber'],
+        parkingId: booking['parkingId'],
+        bookingId: booking['bookingId'],
+        parkingName: booking['parkingName'],
+        arrivalTime: booking['arrivalTime']?.toDate(),
+      );
+
+      // Refresh the list after generating QR code
+      await Navigator.push(context, MaterialPageRoute(builder: (context) => qrScreen));
+      _loadUserQRCodes();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error generating QR code: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0XFF0079C0),
+      extendBody: true,
       appBar: AppBar(
         title: const CustomTitle(
-          text: 'QR Codes',
+          text: 'QR Code',
           color: Colors.white,
           size: 32,
         ),
@@ -178,25 +270,34 @@ class _MultiQRCodeState extends State<MultiQRCode> {
         toolbarHeight: 100,
         backgroundColor: const Color(0XFF0079C0),
       ),
-      body: RefreshIndicator(
-        onRefresh: _loadUserQRCodes,
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator(color: Colors.white))
-            : Container(
-                padding: const EdgeInsets.all(16),
-                child: _userQRCodes.isEmpty
-                    ? const Center(
-                        child: Text(
-                          "No active QR codes found",
-                          style: TextStyle(color: Colors.white, fontSize: 16),
+      body: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(50),
+            topRight: Radius.circular(50),
+          ),
+        ),
+        child: RefreshIndicator(
+          onRefresh: _loadUserQRCodes,
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator(color: Colors.black))
+              : Container(
+                  padding: const EdgeInsets.all(16),
+                  child: _userQRCodes.isEmpty
+                      ? const Center(
+                          child: Text(
+                            "No active QR codes found",
+                            style: TextStyle(color: Colors.black, fontSize: 16),
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _userQRCodes.length,
+                          itemBuilder: (context, index) =>
+                              _buildParkingSection(_userQRCodes[index]),
                         ),
-                      )
-                    : ListView.builder(
-                        itemCount: _userQRCodes.length,
-                        itemBuilder: (context, index) =>
-                            _buildParkingSection(_userQRCodes[index]),
-                      ),
-              ),
+                ),
+        ),
       ),
     );
   }

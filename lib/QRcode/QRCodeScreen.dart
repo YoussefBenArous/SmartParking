@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:smart_parking/HomePage/userpages/UserHome.dart';
 import 'package:smart_parking/widget/CustomTiltle.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
@@ -10,7 +11,8 @@ class QRCodeScreen extends StatefulWidget {
   final String parkingId;
   final String bookingId;
   final String parkingName;
-  final Map<String, dynamic>? existingQRData; // Add this line
+  final Map<String, dynamic>? existingQRData;
+  final DateTime? arrivalTime; // Add this
 
   const QRCodeScreen({
     Key? key,
@@ -18,7 +20,8 @@ class QRCodeScreen extends StatefulWidget {
     required this.parkingId,
     required this.bookingId,
     required this.parkingName,
-    this.existingQRData, // Add this line
+    this.existingQRData,
+    this.arrivalTime, // Add this
   }) : super(key: key);
 
   @override
@@ -43,93 +46,126 @@ class _QRCodeScreenState extends State<QRCodeScreen> {
     }
   }
 
-Future<void> _uploadQRCode() async {
-  try {
-    final userId = FirebaseAuth.instance.currentUser?.uid;
-    if (userId == null) throw 'User not authenticated';
+  Future<void> _uploadQRCode() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) throw 'User not authenticated';
 
-    final qrDocRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('qrcodes')
-        .doc(widget.bookingId); // Use bookingId as QR document ID
+      final qrDocRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('qrcodes')
+          .doc(widget.bookingId); // Use bookingId as QR document ID
 
-    await qrDocRef.set(_verifiedData!); // Store the verified QR data
+      await qrDocRef.set(_verifiedData!); // Store the verified QR data
 
-    print('QR Code data uploaded successfully');
-  } catch (e) {
-    print('Error uploading QR Code: $e');
+      print('QR Code data uploaded successfully');
+    } catch (e) {
+      print('Error uploading QR Code: $e');
+    }
   }
-}
 
-Future<void> _verifyAndLoadData() async {
-  try {
-    final userId = FirebaseAuth.instance.currentUser?.uid;
-    if (userId == null) throw 'User not authenticated';
+  Future<void> _verifyAndLoadData() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) throw 'User not authenticated';
 
-    // Match required fields from security rules
-    final qrData = {
-      'parkingId': widget.parkingId,
-      'parkingName': widget.parkingName,
-      'spotNumber': widget.spotNumber,
-      'bookingId': widget.bookingId,
-      'timestamp': DateTime.now().toIso8601String(),
-      'userId': userId,
-      'qrData': jsonEncode({
+      // Create basic QR data without any server-side fields
+      final qrData = {
+        'parkingId': widget.parkingId,
+        'parkingName': widget.parkingName,
+        'spotNumber': widget.spotNumber,
+        'bookingId': widget.bookingId,
+        'timestamp': DateTime.now().toIso8601String(),
+        'userId': userId,
+      };
+
+      // Generate QR content separately
+      final qrContent = {
         'bookingId': widget.bookingId,
         'userId': userId,
         'timestamp': DateTime.now().toIso8601String(),
-      })
-    };
+        'spotNumber': widget.spotNumber,
+        'parkingId': widget.parkingId,
+      };
 
-    // Save QR data according to security rules
-    final batch = FirebaseFirestore.instance.batch();
-    
-    batch.set(
-      FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('qrcodes')
-        .doc(widget.bookingId),
-      qrData
-    );
+      // Add encoded QR data
+      qrData['qrData'] = jsonEncode(qrContent);
 
-    batch.set(
-      FirebaseFirestore.instance
-        .collection('parking')
-        .doc(widget.parkingId)
-        .collection('qrcodes')
-        .doc(widget.bookingId),
-      qrData
-    );
+      // Save to Firestore
+      final batch = FirebaseFirestore.instance.batch();
 
-    await batch.commit();
+      // User QR
+      final userQRRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('qrcodes')
+          .doc(widget.bookingId);
+      batch.set(userQRRef, qrData);
 
-    if (mounted) {
-      setState(() {
-        _verifiedData = qrData;
-        _isLoading = false;
-      });
-    }
-  } catch (e) {
-    if (mounted) {
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-      });
+      // Parking QR
+      final parkingQRRef = FirebaseFirestore.instance
+          .collection('parking')
+          .doc(widget.parkingId)
+          .collection('qrcodes')
+          .doc(widget.bookingId);
+      batch.set(parkingQRRef, qrData);
+
+      await batch.commit();
+
+      if (mounted) {
+        setState(() {
+          _verifiedData = qrData;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error generating QR code: $e');
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _isLoading = false;
+        });
+      }
     }
   }
-}
 
   String _generateQRData() {
-    return jsonEncode(_verifiedData);
+    try {
+      if (_verifiedData == null) return '';
+      // Only include essential data for the QR code
+      final qrContent = {
+        'bookingId': _verifiedData!['bookingId'],
+        'userId': _verifiedData!['userId'],
+        'timestamp': _verifiedData!['timestamp'],
+        'spotNumber': _verifiedData!['spotNumber'],
+        'parkingId': _verifiedData!['parkingId'],
+      };
+      return jsonEncode(qrContent);
+    } catch (e) {
+      print('Error generating QR data: $e');
+      return '';
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0XFF0079C0),
+      extendBody: true,
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+             Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => HomePage(),
+                ),
+              );
+          },
+        ),
+      
         backgroundColor: const Color(0XFF0079C0),
         title: CustomTitle(
           text: 'QR Code',

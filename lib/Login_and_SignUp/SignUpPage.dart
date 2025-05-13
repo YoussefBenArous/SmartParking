@@ -225,7 +225,7 @@ class _SignUpState extends State<SignUpPage> {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.only(left: 13),
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
                     child: DropdownButton<String>(
                       value: selectedType,
                       hint: Text(
@@ -246,6 +246,7 @@ class _SignUpState extends State<SignUpPage> {
                       },
                       items: [
                         DropdownMenuItem(
+                          
                           child: Text(
                             "select Your Type",
                             style: TextStyle(
