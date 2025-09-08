@@ -38,9 +38,18 @@ class _RemoveReservationState extends State<RemoveReservation> {
 
       final parkingBookings = <String, List<Map<String, dynamic>>>{};
 
+      final now = DateTime.now();
+
       final futures = bookingsSnapshot.docs.map((doc) async {
         final data = doc.data();
         final parkingId = data['parkingId'];
+        final expiryTime = (data['expiryTime'] as Timestamp?)?.toDate();
+
+        // Check if the reservation has expired
+        if (expiryTime != null && expiryTime.isBefore(now)) {
+          await _markReservationAsExpired(doc.id, parkingId, data['spotId']);
+          return; // Skip adding expired reservations
+        }
 
         // Get parking details
         final parkingDoc = await _firestore
@@ -84,6 +93,39 @@ class _RemoveReservationState extends State<RemoveReservation> {
           SnackBar(content: Text('Error: ${e.toString()}')),
         );
       }
+    }
+  }
+
+  Future<void> _markReservationAsExpired(String bookingId, String parkingId, String spotId) async {
+    try {
+      final batch = _firestore.batch();
+
+      // Update the booking status to 'expired'
+      final bookingRef = _firestore.collection('bookings').doc(bookingId);
+      batch.update(bookingRef, {
+        'status': 'expired',
+        'expiredAt': FieldValue.serverTimestamp(),
+      });
+
+      // Update the spot to make it available
+      final spotRef = _firestore
+          .collection('parking')
+          .doc(parkingId)
+          .collection('spots')
+          .doc(spotId);
+      batch.update(spotRef, {
+        'isAvailable': true,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'lastBookingId': bookingId,
+        'lastAction': 'expired',
+      });
+
+      // Commit the batch
+      await batch.commit();
+
+      print('Reservation $bookingId marked as expired.');
+    } catch (e) {
+      print('Error marking reservation as expired: $e');
     }
   }
 
@@ -222,7 +264,7 @@ class _RemoveReservationState extends State<RemoveReservation> {
       appBar: AppBar(
         backgroundColor: Color(0XFF0079C0),
         leading: IconButton(
-          icon: Icon(Icons.arrow_back),
+          icon: Icon(Icons.arrow_back,color: Colors.white,),
           onPressed: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => SettingPage()),

@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:smart_parking/QRcode/QRCodeScreen.dart';
 import 'package:uuid/uuid.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class BookingPage extends StatefulWidget {
   final String slotId;
@@ -163,10 +164,24 @@ class _BookingPageState extends State<BookingPage> {
         'lastBookingId': bookingId,
         'lastUserId': user.uid,
         'lastUpdated': FieldValue.serverTimestamp(),
-        'expiryTime':
-            Timestamp.fromDate(selectedTime!.add(Duration(minutes: 30))),
+        'expiryTime': Timestamp.fromDate(selectedTime!), // Add expiryTime
         'status': 'reserved'
       });
+
+      // Save to Realtime Database
+      final DatabaseReference realtimeRef = FirebaseDatabase.instance.ref();
+      await realtimeRef
+          .child('spots')
+          .child(widget.parkingId)
+          .child(widget.slotId)
+          .update({
+            'isAvailable': false,
+            'lastBookingId': bookingId,
+            'lastUserId': user.uid,
+            'lastUpdated': ServerValue.timestamp,
+            'expiryTime': selectedTime!.toIso8601String(), // Add expiryTime
+            'status': 'reserved'
+          });
 
       await batch.commit();
 
@@ -213,6 +228,12 @@ class _BookingPageState extends State<BookingPage> {
             fontStyle: FontStyle.normal,
           ),
         ),
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () {
+            Navigator.pop(context);
+          },
+        ),
       ),
       body: Container(
         decoration: BoxDecoration(
@@ -229,20 +250,20 @@ class _BookingPageState extends State<BookingPage> {
               children: [
                 Card(
                   child: Padding(
-                    padding: EdgeInsets.all(20),
+                    padding: EdgeInsets.all(30),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           'Spot Details',
                           style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold),
+                              fontSize: 20, fontWeight: FontWeight.bold),
                         ),
                         SizedBox(height: 10),
                         Text(
                           'Parking: ${widget.parkingName}',
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 20,
                             color: Colors.black,
                             fontStyle: FontStyle.italic,
                           ),
@@ -250,7 +271,7 @@ class _BookingPageState extends State<BookingPage> {
                         Text(
                           'Spot: ${widget.slotName}',
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 20,
                             color: Colors.black,
                             fontStyle: FontStyle.italic,
                           ),

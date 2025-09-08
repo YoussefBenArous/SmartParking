@@ -265,7 +265,10 @@ class _MultiQRCodeState extends State<MultiQRCode> {
             context,
             MaterialPageRoute(builder: (context) => HomePage()),
           ),
-          icon: const Icon(Icons.arrow_back),
+          icon: const Icon(
+            Icons.arrow_back,
+            color: Colors.white,
+          ),
         ),
         toolbarHeight: 100,
         backgroundColor: const Color(0XFF0079C0),

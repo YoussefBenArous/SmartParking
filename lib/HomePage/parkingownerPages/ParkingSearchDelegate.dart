@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 class ParkingSearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
   final List<Map<String, dynamic>> parkingLocations;
 
-  ParkingSearchDelegate(this.parkingLocations);
+  ParkingSearchDelegate(this.parkingLocations) {
+    print("DEBUG: Initialized with ${parkingLocations.length} parking locations");
+  }
 
   @override
   List<Widget> buildActions(BuildContext context) {
@@ -11,12 +13,8 @@ class ParkingSearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
       IconButton(
         icon: const Icon(Icons.clear),
         onPressed: () {
-          if (query.isEmpty) {
-            close(context, null);
-          } else {
-            query = '';
-            showSuggestions(context);
-          }
+          print("DEBUG: Clearing search query");
+          query = '';
         },
       ),
     ];
@@ -26,67 +24,94 @@ class ParkingSearchDelegate extends SearchDelegate<Map<String, dynamic>?> {
   Widget buildLeading(BuildContext context) {
     return IconButton(
       icon: const Icon(Icons.arrow_back),
-      onPressed: () => close(context, null),
+      onPressed: () {
+        print("DEBUG: Closing search");
+        close(context, null);
+      },
     );
   }
 
   @override
   Widget buildResults(BuildContext context) {
-    return _buildSearchResults();
+    print("DEBUG: Building results for query: $query");
+    
+    if (query.isEmpty) {
+      print("DEBUG: Query is empty");
+      return const Center(
+        child: Text('Please enter a parking name to search'),
+      );
+    }
+
+    final results = parkingLocations.where((parking) {
+      final name = parking['name']?.toString().toLowerCase() ?? '';
+      final searchQuery = query.toLowerCase();
+      return name.contains(searchQuery);
+    }).toList();
+
+    print("DEBUG: Found ${results.length} results");
+
+    if (results.isEmpty) {
+      return const Center(
+        child: Text('No parking found'),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: results.length,
+      itemBuilder: (context, index) {
+        final parking = results[index];
+        return ListTile(
+          title: Text(parking['name'] ?? 'Unnamed Parking'),
+          subtitle: Text('Available: ${parking['available']} spots'),
+          onTap: () {
+            print("DEBUG: Selected parking: ${parking['name']}");
+            close(context, parking);
+          },
+        );
+      },
+    );
   }
 
   @override
   Widget buildSuggestions(BuildContext context) {
-    return _buildSearchResults();
-  }
-
-  Widget _buildSearchResults() {
+    print("DEBUG: Building suggestions for query: $query");
+    
     if (query.isEmpty) {
-      return _buildAllParkings();
-    }
-
-    final results = parkingLocations.where((parking) {
-      final name = (parking['name'] ?? '').toString().toLowerCase();
-      final address = (parking['address'] ?? '').toString().toLowerCase();
-      final searchLower = query.toLowerCase();
-      return name.contains(searchLower) || address.contains(searchLower);
-    }).toList();
-
-    if (results.isEmpty) {
-      return const Center(
-        child: Text('No parking spots found'),
+      return ListView.builder(
+        itemCount: parkingLocations.length,
+        itemBuilder: (context, index) {
+          final parking = parkingLocations[index];
+          return ListTile(
+            title: Text(parking['name'] ?? 'Unnamed Parking'),
+            subtitle: Text('Available: ${parking['available']} spots'),
+            onTap: () {
+              print("DEBUG: Selected suggestion: ${parking['name']}");
+              close(context, parking);
+            },
+          );
+        },
       );
     }
 
-    return _buildParkingList(results);
-  }
+    final suggestions = parkingLocations.where((parking) {
+      final name = parking['name']?.toString().toLowerCase() ?? '';
+      final searchQuery = query.toLowerCase();
+      return name.contains(searchQuery);
+    }).toList();
 
-  Widget _buildAllParkings() {
-    return _buildParkingList(parkingLocations);
-  }
+    print("DEBUG: Found ${suggestions.length} suggestions");
 
-  Widget _buildParkingList(List<Map<String, dynamic>> parkings) {
     return ListView.builder(
-      itemCount: parkings.length,
+      itemCount: suggestions.length,
       itemBuilder: (context, index) {
-        final parking = parkings[index];
-        final isAvailable = (parking['available'] ?? 0) > 0;
-        final status = parking['status'] ?? 'inactive';
-        final name = parking['name'] ?? 'Unnamed Parking';
-        final price = parking['price'] ?? 'N/A';
-        final available = parking['available'] ?? 0;
-
+        final parking = suggestions[index];
         return ListTile(
-          leading: Icon(
-            Icons.local_parking,
-            color: isAvailable && status == 'active' 
-                ? Colors.green 
-                : Colors.red,
-          ),
-          title: Text(name),
-          subtitle: Text('Available: $available spots'),
-          trailing: Text(price),
-          onTap: () => close(context, parking),
+          title: Text(parking['name'] ?? 'Unnamed Parking'),
+          subtitle: Text('Available: ${parking['available']} spots'),
+          onTap: () {
+            print("DEBUG: Selected suggestion: ${parking['name']}");
+            close(context, parking);
+          },
         );
       },
     );

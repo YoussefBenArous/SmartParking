@@ -1,0 +1,345 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Authentication Helpers
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isParkingOwner() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'Parking Owner';
+    }
+
+    function isValidParking(parking) {
+      return parking.keys().hasAll(['name', 'location', 'capacity', 'price', 'available', 'ownerId']) &&
+             parking.location is map &&
+             parking.location.keys().hasAll(['latitude', 'longitude']) &&
+             parking.location.latitude is number &&
+             parking.location.longitude is number &&
+             parking.capacity is number &&
+             parking.available is number &&
+             parking.available <= parking.capacity &&
+             parking.price is string &&
+             parking.ownerId == request.auth.uid;
+    }
+
+    function isValidSpot(spot) {
+      return spot.keys().hasAll(['number', 'type']) &&
+             spot.number is string;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() &&
+                   request.resource.data.keys().hasAll(['email', 'userType']) &&
+                   request.resource.data.userType in ['User', 'Parking Owner'];
+      allow update: if request.auth.uid == userId;
+
+      // QR Codes under Users
+      match /qrcodes/{qrId} {
+        allow create: if isAuthenticated() &&
+                      request.auth.uid == userId &&
+                      request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData']) &&
+                      request.resource.data.timestamp is string;
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && 
+                     request.auth.uid == userId &&
+                     exists(/databases/$(database)/documents/bookings/$(qrId)) &&
+                     get(/databases/$(database)/documents/bookings/$(qrId)).data.status == 'cancelled';
+      }
+
+      match /ownedParkings/{parkingId} {
+        allow create: if isParkingOwner() && 
+                     request.resource.data.ownerId == request.auth.uid &&
+                     request.resource.data.available == request.resource.data.capacity &&
+                     isValidParking(request.resource.data);
+        allow read: if request.auth.uid == userId;
+        allow write: if request.auth.uid == userId && 
+                      get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'Parking Owner';
+      }
+    }
+
+    // Parking Collection
+    match /parking/{parkingId} {
+      allow read: if isAuthenticated();
+      // Add list permission for parking collection
+      allow list: if isAuthenticated();
+      
+      match /spots/{spotId} {
+        // Updated spot rules to allow batch initialization
+        allow read: if isAuthenticated();
+        // Add list permission for spots subcollection
+        allow list: if isAuthenticated();
+        
+        // Allow creation and updates for both owners and users with proper constraints
+        allow create: if 
+          (isParkingOwner() && 
+           get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid) ||
+          (isAuthenticated() && 
+           request.resource.data.keys().hasAll(['number', 'type']) &&
+           request.resource.data.number is string &&
+           request.resource.data.type is string);
+
+        // Allow updates with specific field restrictions
+        allow update: if 
+          (isParkingOwner() && 
+           get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid) ||
+          (isAuthenticated() && 
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastUpdated']));
+
+        // Add lastBookingId and lastUserId to allowed fields
+        allow update: if 
+          (isParkingOwner() && 
+           get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid) ||
+          (isAuthenticated() && 
+           request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastUpdated', 'lastBookingId', 'lastUserId']));
+
+        // Update spot rules to allow additional fields
+        allow update: if 
+          (isParkingOwner() && 
+           get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid) ||
+          (isAuthenticated() && 
+           request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastUpdated', 'lastBookingId', 'lastUserId', 'lastAction']));
+
+        // Allow automatic spot cleanup
+        allow write: if isAuthenticated() &&
+                  (request.auth.uid == resource.data.lastUserId ||
+                   request.auth.uid == get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId);
+
+        allow update: if isAuthenticated() &&
+          (request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['isAvailable', 'lastUpdated', 'lastBookingId', 'lastUserId', 'expiryTime']) &&
+          request.resource.data.isAvailable is bool &&
+          request.resource.data.lastUpdated is timestamp &&
+          request.resource.data.lastBookingId is string &&
+          request.resource.data.expiryTime is timestamp &&
+          request.resource.data.lastUserId == request.auth.uid);
+
+        allow update: if isAuthenticated() &&
+          (request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'lastUpdated', 'syncedFromRealtime']) &&
+          (
+            request.auth.uid == resource.data.lastUserId ||
+            request.resource.data.syncedFromRealtime == true
+          ));
+
+        // Update spot rules to handle expiration
+        allow update: if isAuthenticated() &&
+          (
+            request.auth.uid == resource.data.lastUserId ||
+            resource.data.status == 'reserved' ||
+            (
+              request.resource.data.status == 'available' &&
+              exists(/databases/$(database)/documents/bookings/$(resource.data.lastBookingId)) &&
+              get(/databases/$(database)/documents/bookings/$(resource.data.lastBookingId)).data.status == 'expired'
+            )
+          );
+      }
+
+      // Allow parking owners to create parking documents
+      allow create: if isParkingOwner() && 
+                   request.resource.data.ownerId == request.auth.uid &&
+                   request.resource.data.available == request.resource.data.capacity &&
+                   isValidParking(request.resource.data);
+      
+      // Allow parking owners to update parking documents
+      allow update: if (isParkingOwner() && resource.data.ownerId == request.auth.uid) ||
+                   (isAuthenticated() && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['available']) &&
+                    request.resource.data.available >= 0 &&
+                    request.resource.data.available <= resource.data.capacity);
+      
+      // Allow parking owners to delete parking documents
+      allow delete: if isParkingOwner() && 
+                   resource.data.ownerId == request.auth.uid;
+                   
+
+      // QR Codes under Parking
+      match /qrcodes/{qrId} {
+        allow create: if isAuthenticated() &&
+                      request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData', 'userId']) &&
+                      request.resource.data.parkingId == parkingId &&
+                      request.resource.data.timestamp is string;
+        allow read: if isAuthenticated() &&
+                    (get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid || 
+                     exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)));
+        allow delete: if isAuthenticated() &&
+                     (request.auth.uid == get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId ||
+                      request.auth.uid == resource.data.userId ||
+                      get(/databases/$(database)/documents/bookings/$(qrId)).data.status == 'expired');
+      }
+    }
+
+    // Bookings Collection
+    match /bookings/{bookingId} {
+      // Allow reading when authenticated
+      allow read: if isAuthenticated();
+
+      // Allow creating bookings with proper validation
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.keys().hasAll([
+          'bookingId',
+          'parkingId',
+          'spotId',
+          'spotNumber',
+          'userId',
+          'userName',
+          'status',
+          'arrivalTime',
+          'expiryTime',
+          'createdAt',
+        ]);
+
+      // Allow booking updates
+      allow update: if isAuthenticated() &&
+        (request.auth.uid == resource.data.userId ||
+         resource.data.status == 'expired');
+    }
+
+    // Spots subcollection
+    match /parking/{parkingId}/spots/{spotId} {
+      allow read: if isAuthenticated();
+      
+      // Allow spot updates during booking
+      allow update: if isAuthenticated() &&
+        request.resource.data.keys().hasAll(['status', 'isAvailable', 'lastBookingId', 'lastUserId']) &&
+        (
+          // Allow parking owners
+          get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid ||
+          // Allow users making bookings
+          request.auth.uid == request.resource.data.lastUserId ||
+          // Allow system updates for expired bookings
+          (resource.data.status == 'reserved' && exists(/databases/$(database)/documents/bookings/$(resource.data.lastBookingId)))
+        );
+    }
+
+    match /users/{userId}/qrcodes/{qrId} {
+      // Allow deletion when booking is cancelled or expired
+      allow delete: if isAuthenticated() &&
+                   (request.auth.uid == userId ||
+                    exists(/databases/$(database)/documents/bookings/$(qrId)) &&
+                    get(/databases/$(database)/documents/bookings/$(qrId)).data.status in ['cancelled', 'expired']);
+    }
+
+    match /parking/{parkingId}/qrcodes/{qrId} {
+      // Allow deletion when booking is cancelled or expired
+      allow delete: if isAuthenticated() &&
+                   (request.auth.uid == resource.data.userId ||
+                    exists(/databases/$(database)/documents/bookings/$(qrId)) &&
+                    get(/databases/$(database)/documents/bookings/$(qrId)).data.status in ['cancelled', 'expired']);
+    }
+
+    // Critical rules for QR codes and bookings
+    match /users/{userId}/qrcodes/{qrId} {
+      allow create: if isAuthenticated() &&
+                    request.auth.uid == userId &&
+                    request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData']) &&
+                    request.resource.data.timestamp is string;
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAuthenticated() && 
+                   request.auth.uid == userId &&
+                   exists(/databases/$(database)/documents/bookings/$(qrId)) &&
+                   get(/databases/$(database)/documents/bookings/$(qrId)).data.status == 'cancelled';
+    }
+
+    match /parking/{parkingId}/qrcodes/{qrId} {
+      allow create: if isAuthenticated() &&
+                    request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData', 'userId']) &&
+                    request.resource.data.parkingId == parkingId &&
+                    request.resource.data.timestamp is string;
+      allow read: if isAuthenticated() &&
+                  (get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId == request.auth.uid || 
+                   exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)));
+      allow delete: if isAuthenticated() &&
+                   (request.auth.uid == get(/databases/$(database)/documents/parking/$(parkingId)).data.ownerId ||
+                    request.auth.uid == resource.data.userId);
+    }
+
+    // Updated Batch Write Rules
+    match /bookings/{bookingId} {
+      allow update: if isAuthenticated() &&
+                   request.auth.uid == resource.data.userId &&
+                   (
+                     (request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['status', 'cancelledAt', 'cancelledBy']) &&
+                     request.resource.data.status == 'cancelled')
+                   );
+      
+      allow delete: if isAuthenticated() && 
+                   request.auth.uid == resource.data.userId &&
+                   resource.data.status == 'cancelled';
+    }
+
+    // Allow batch operations for booking creation
+    match /bookings/{bookingId} {
+      allow create: if isAuthenticated() &&
+                   request.resource.data.userId == request.auth.uid &&
+                   request.resource.data.keys().hasAll([
+                     'parkingId',
+                     'spotId',
+                     'userId',
+                     'status',
+                     'timestamp',
+                     'spotNumber',
+                     'parkingName'
+                   ]);
+    }
+
+    // Updated QR code rules to allow batch creation
+    match /users/{userId}/qrcodes/{qrId} {
+      allow create: if isAuthenticated() &&
+                   request.auth.uid == userId &&
+                   request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData']);
+    }
+
+    match /parking/{parkingId}/qrcodes/{qrId} {
+      allow create: if isAuthenticated() &&
+                   request.resource.data.keys().hasAll(['parkingId', 'parkingName', 'spotNumber', 'bookingId', 'timestamp', 'qrData', 'userId']);
+    }
+
+    // Allow parking availability updates
+    match /parking/{parkingId} {
+      allow update: if isAuthenticated() &&
+                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['available', 'lastUpdated']);
+    }
+
+    // Allow checking availability
+    match /parking/{parkingId} {
+      allow read: if isAuthenticated();
+      allow list: if isAuthenticated();
+      
+      match /spots/{spotId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+      }
+    }
+
+    match /bookings/{bookingId} {
+      allow read: if isAuthenticated();
+      allow list: if isAuthenticated();
+      allow count: if isAuthenticated();
+    }
+
+    // Payment Collection Rules
+    match /payments/{paymentId} {
+      allow create: if isAuthenticated() &&
+        request.resource.data.keys().hasAll(['userId', 'parkingId', 'bookingId', 'amount', 'paymentMethod', 'duration', 'timestamp', 'status']) &&
+        request.resource.data.userId == request.auth.uid;
+      
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == resource.data.userId ||
+         get(/databases/$(database)/documents/parking/$(resource.data.parkingId)).data.ownerId == request.auth.uid);
+      
+      allow update: if isAuthenticated() &&
+        request.auth.uid == resource.data.userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart' as rtdb;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -183,19 +184,29 @@ class ParkingSpotService {
   }
 
   Future<void> handleSensorData(String parkingId, String spotId, bool isOccupied) async {
-    final spotRef = _database.ref().child('spots').child(parkingId).child(spotId);
-    final snapshot = await spotRef.get();
-    
-    if (!snapshot.exists) return;
-    
-    final spotData = Map<String, dynamic>.from(snapshot.value as Map);
-    // Only update status if spot is not reserved
-    if (spotData['isReserved'] != true) {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null || user.email != 'esp32cam@gmail.com') {
+        throw Exception('Unauthorized sensor update');
+      }
+
+      final spotRef = _database.ref().child('spots').child(parkingId).child(spotId);
+      final snapshot = await spotRef.get();
+      
+      if (!snapshot.exists) {
+        throw Exception('Spot not found');
+      }
+
       await spotRef.update({
         'status': isOccupied ? 'occupied' : 'available',
         'lastUpdated': ServerValue.timestamp,
-        'sensorUpdated': ServerValue.timestamp
+        'sensorUpdated': ServerValue.timestamp,
+        'updatedBy': 'sensor',
+        'sensorId': 'esp32cam'
       });
+    } catch (e) {
+      print('Error handling sensor data: $e');
+      throw e;
     }
   }
 
@@ -307,12 +318,50 @@ class ParkingSpotService {
     String status,
     Map<String, dynamic> additionalData,
   ) async {
-    final ref = _database.ref().child('spots').child(parkingId).child(spotId);
-    await ref.update({
-      'status': status,
-      'lastUpdated': ServerValue.timestamp,
-      ...additionalData,
-    });
+    try {
+      // Check if user is authenticated
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception('User must be authenticated');
+      }
+
+      // Get spot reference
+      final ref = _database.ref().child('spots').child(parkingId).child(spotId);
+      
+      // Get current data to verify permissions
+      final snapshot = await ref.get();
+      if (!snapshot.exists) {
+        throw Exception('Spot does not exist');
+      }
+
+      final spotData = Map<String, dynamic>.from(snapshot.value as Map);
+      
+      // Verify user has permission
+      if (spotData['lastUserId'] != user.uid && 
+          !(await _isParkingOwner(parkingId, user.uid))) {
+        throw Exception('Permission denied');
+      }
+
+      // Update with authenticated user
+      await ref.update({
+        'status': status,
+        'lastUpdated': ServerValue.timestamp,
+        'lastUserId': user.uid,
+        ...additionalData,
+      });
+    } catch (e) {
+      print('Error updating spot status: $e');
+      throw e;
+    }
+  }
+
+  Future<bool> _isParkingOwner(String parkingId, String userId) async {
+    try {
+      final doc = await _firestore.collection('parking').doc(parkingId).get();
+      return doc.exists && doc.data()?['ownerId'] == userId;
+    } catch (e) {
+      return false;
+    }
   }
 
   Future<void> unlockSpot(String parkingId, String spotId) async {

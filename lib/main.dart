@@ -1,28 +1,50 @@
-import 'package:flutter/material.dart';
-import 'package:smart_parking/PayScreen/PayScreen.dart';
-import 'package:smart_parking/WelcomePage/FirstPage.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
+import 'package:smart_parking/Login_and_SignUp/LoginPage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:smart_parking/WelcomePage/FirstPage.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  if (kIsWeb) {
-    
+
+  // Initialize Firebase with proper error handling
+  try {
+    if (kIsWeb) {
       await Firebase.initializeApp(
         options: const FirebaseOptions(
-          apiKey: "AIzaSyDQXeWa2oNzh6WX17w7cdHT7pkmUizwJVc",
-          authDomain: "smartparking-4025c.firebaseapp.com",
-          databaseURL: "https://smartparking-4025c-default-rtdb.europe-west1.firebasedatabase.app",
-          projectId: "smartparking-4025c",
-          storageBucket: "smartparking-4025c.appspot.com",
-          messagingSenderId: "786760277384",
-          appId: "1:786760277384:web:891d912f6aed4dd3952e3d",
-          measurementId: "G-SBERQ6WY93",
+        apiKey: "Your API Key",
+          authDomain: "Your Auth Domain",
+          databaseURL: "Your databaseURL",
+          projectId: "Your Project ID",
+          storageBucket: "Your Storage Bucket",
+          messagingSenderId: "Your Messaging Sender ID",
+          appId: "Your App ID"
         ),
+      );
+    } else {
+      await Firebase.initializeApp();
+    }
+
+    // Configure Firestore settings
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
     );
-  } else {
-    await Firebase.initializeApp();
+
+    // Initialize Stripe
+    if (!kIsWeb) {
+      Stripe.publishableKey = 'pk_test_51RUs4GPxnbPP7UD9AWWMDEOUZLj803GLYVjZ1eqTxCQvZDi3EMIuJfNVVvihlM3UO0zCSA6NNrNlXsCna2LVU3qJ00HrS77hUM';
+      await Stripe.instance.applySettings();
+    }
+
+    // Set up auth state persistence
+    await FirebaseAuth.instance.setPersistence(Persistence.LOCAL);
+
+  } catch (e) {
+    print('Error initializing Firebase: $e');
   }
 
   runApp(const MyApp());
@@ -33,11 +55,18 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       title: "Smart Parking",
       debugShowCheckedModeBanner: false,
-      
-      home: PayScreen(),
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          return const FirstPage();
+        },
+      ),
     );
   }
 }

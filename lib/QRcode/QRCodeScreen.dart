@@ -5,6 +5,7 @@ import 'package:smart_parking/widget/CustomTiltle.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart'; // Add this import
 
 class QRCodeScreen extends StatefulWidget {
   final int spotNumber;
@@ -70,52 +71,58 @@ class _QRCodeScreenState extends State<QRCodeScreen> {
       final userId = FirebaseAuth.instance.currentUser?.uid;
       if (userId == null) throw 'User not authenticated';
 
-      // Create basic QR data without any server-side fields
+      // Get booking data to verify and get expiry time
+      final bookingDoc = await FirebaseFirestore.instance
+          .collection('bookings')
+          .doc(widget.bookingId)
+          .get();
+
+      if (!bookingDoc.exists) throw 'Booking not found';
+
+      final bookingData = bookingDoc.data()!;
+      final expiryTime = (bookingData['expiryTime'] as Timestamp).toDate();
+
+      // Create structured QR data
       final qrData = {
-        'parkingId': widget.parkingId,
-        'parkingName': widget.parkingName,
-        'spotNumber': widget.spotNumber,
         'bookingId': widget.bookingId,
-        'timestamp': DateTime.now().toIso8601String(),
+        'parkingId': widget.parkingId,
+        'spotNumber': widget.spotNumber,
         'userId': userId,
+        'type': 'entry',
+        'status': 'active',
+        'timestamp': ServerValue.timestamp,
+        'expiryTime': expiryTime.millisecondsSinceEpoch,
       };
 
-      // Generate QR content separately
-      final qrContent = {
-        'bookingId': widget.bookingId,
-        'userId': userId,
-        'timestamp': DateTime.now().toIso8601String(),
-        'spotNumber': widget.spotNumber,
-        'parkingId': widget.parkingId,
-      };
+      // Save to Realtime Database under qrcode/parkingId/spotNumber
+      final realtimeDb = FirebaseDatabase.instance;
+      final qrRef = realtimeDb
+          .ref()
+          .child('qrcode')
+          .child(widget.parkingId)
+          .child(widget.spotNumber.toString());
 
-      // Add encoded QR data
-      qrData['qrData'] = jsonEncode(qrContent);
+      await qrRef.set(qrData);
 
-      // Save to Firestore
-      final batch = FirebaseFirestore.instance.batch();
-
-      // User QR
-      final userQRRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection('qrcodes')
-          .doc(widget.bookingId);
-      batch.set(userQRRef, qrData);
-
-      // Parking QR
-      final parkingQRRef = FirebaseFirestore.instance
-          .collection('parking')
-          .doc(widget.parkingId)
-          .collection('qrcodes')
-          .doc(widget.bookingId);
-      batch.set(parkingQRRef, qrData);
-
-      await batch.commit();
+      // Listen for changes in the Realtime Database
+      qrRef.onValue.listen((event) {
+        if (event.snapshot.value != null && mounted) {
+          final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+          setState(() {
+            _verifiedData = {
+              ...data,
+              'parkingName': widget.parkingName,
+            };
+          });
+        }
+      });
 
       if (mounted) {
         setState(() {
-          _verifiedData = qrData;
+          _verifiedData = {
+            ...qrData,
+            'parkingName': widget.parkingName,
+          };
           _isLoading = false;
         });
       }
@@ -133,13 +140,16 @@ class _QRCodeScreenState extends State<QRCodeScreen> {
   String _generateQRData() {
     try {
       if (_verifiedData == null) return '';
-      // Only include essential data for the QR code
+      
+      // Ensure only required fields are included in QR code
       final qrContent = {
         'bookingId': _verifiedData!['bookingId'],
-        'userId': _verifiedData!['userId'],
-        'timestamp': _verifiedData!['timestamp'],
-        'spotNumber': _verifiedData!['spotNumber'],
         'parkingId': _verifiedData!['parkingId'],
+        'spotNumber': _verifiedData!['spotNumber'],
+        'userId': _verifiedData!['userId'],
+        'type': _verifiedData!['type'],
+        'status': _verifiedData!['status'],
+        'expiryTime': _verifiedData!['expiryTime'],
       };
       return jsonEncode(qrContent);
     } catch (e) {
@@ -155,7 +165,10 @@ class _QRCodeScreenState extends State<QRCodeScreen> {
       extendBody: true,
       appBar: AppBar(
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
+          icon: const Icon(
+            Icons.arrow_back,
+            color: Colors.white,
+          ),
           onPressed: () {
              Navigator.push(
                 context,

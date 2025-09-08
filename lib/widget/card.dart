@@ -6,8 +6,9 @@ class BuildStatCard extends StatelessWidget {
   final IconData? icon;
   final String? image;
   final Color? color;
-  final double? imageheight ;
-  final double? imagewidth ;
+  final double? imageheight;
+  final double? imagewidth;
+  final ButtonConfig? buttonConfig;
 
   const BuildStatCard({
     Key? key,
@@ -15,7 +16,10 @@ class BuildStatCard extends StatelessWidget {
     required this.value,
     this.icon,
     this.image,
-    this.color, this.imageheight, this.imagewidth,
+    this.color,
+    this.imageheight,
+    this.imagewidth,
+    this.buttonConfig,
   }) : super(key: key);
 
   @override
@@ -43,7 +47,6 @@ class BuildStatCard extends StatelessWidget {
                   fit: BoxFit.contain,
                   height: imageheight,
                   width: imagewidth,
-                
                 ),
               ),
             const SizedBox(height: 8),
@@ -69,9 +72,54 @@ class BuildStatCard extends StatelessWidget {
                 ),
               ),
             ),
+            if (buttonConfig != null) ...[
+              const SizedBox(height: 12),
+              Center(
+                child: ElevatedButton(
+                  onPressed: buttonConfig!.onPressed,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xff0079C0),
+                    minimumSize: Size(
+                      buttonConfig!.width ?? 120,
+                      buttonConfig!.height ?? 40,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                        buttonConfig!.radius ?? 8,
+                      ),
+                    ),
+                  ),
+                  child: Text(
+                    buttonConfig!.text,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: buttonConfig!.fontSize ?? 14,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
+}
+
+class ButtonConfig {
+  final String text;
+  final VoidCallback onPressed;
+  final double? width;
+  final double? height;
+  final double? fontSize;
+  final double? radius;
+
+  ButtonConfig({
+    required this.text,
+    required this.onPressed,
+    this.width,
+    this.height,
+    this.fontSize,
+    this.radius,
+  });
 }

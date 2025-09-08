@@ -325,95 +325,114 @@ class _SpotSelectionScreenState extends State<SpotSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.parkingName)),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore
-            .collection('parking')
-            .doc(widget.parkingId)
-            .collection('spots')
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return Center(child: CircularProgressIndicator());
-          }
-
-          return StreamBuilder<DatabaseEvent>(
-            stream: _database.ref('spots/${widget.parkingId}').onValue,
-            builder: (context, realtimeSnapshot) {
-              return StreamBuilder<QuerySnapshot>(
-                stream: _firestore
-                    .collection('bookings')
-                    .where('parkingId', isEqualTo: widget.parkingId)
-                    .where('status', isEqualTo: 'active')
-                    .snapshots(),
-                builder: (context, bookingsSnapshot) {
-                  var spots = snapshot.data!.docs;
-                  Map<String, dynamic>? realtimeData;
-                  Map<String, dynamic> bookingsMap = {};
-
-                  // Process realtime data
-                  if (realtimeSnapshot.hasData && realtimeSnapshot.data?.snapshot.value != null) {
-                    realtimeData = Map<String, dynamic>.from(realtimeSnapshot.data!.snapshot.value as Map);
-                  }
-
-                  // Process bookings data
-                  if (bookingsSnapshot.hasData) {
-                    for (var doc in bookingsSnapshot.data!.docs) {
-                      final data = doc.data() as Map<String, dynamic>;
-                      if (data['spotId'] != null) {
-                        bookingsMap[data['spotId']] = data;
-                      }
+      backgroundColor: Color(0XFF0079C0),
+      appBar: AppBar(title: Text(widget.parkingName,style: TextStyle(fontSize: 32,color: Colors.white),
+      ),
+      leading: IconButton(
+        icon: Icon(Icons.arrow_back, color: Colors.white),
+        onPressed: () => Navigator.pop(context),
+      ),
+      centerTitle: true,
+      backgroundColor: Color(0XFF0079C0),
+      toolbarHeight: 100,
+      ),
+      body: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(50),
+            topRight: Radius.circular(50),
+          ),
+        ),
+        child: StreamBuilder<QuerySnapshot>(
+          stream: _firestore
+              .collection('parking')
+              .doc(widget.parkingId)
+              .collection('spots')
+              .snapshots(),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return Center(child: CircularProgressIndicator());
+            }
+        
+            return StreamBuilder<DatabaseEvent>(
+              stream: _database.ref('spots/${widget.parkingId}').onValue,
+              builder: (context, realtimeSnapshot) {
+                return StreamBuilder<QuerySnapshot>(
+                  stream: _firestore
+                      .collection('bookings')
+                      .where('parkingId', isEqualTo: widget.parkingId)
+                      .where('status', isEqualTo: 'active')
+                      .snapshots(),
+                  builder: (context, bookingsSnapshot) {
+                    var spots = snapshot.data!.docs;
+                    Map<String, dynamic>? realtimeData;
+                    Map<String, dynamic> bookingsMap = {};
+        
+                    // Process realtime data
+                    if (realtimeSnapshot.hasData && realtimeSnapshot.data?.snapshot.value != null) {
+                      realtimeData = Map<String, dynamic>.from(realtimeSnapshot.data!.snapshot.value as Map);
                     }
-                  }
-
-                  return GridView.builder(
-                    padding: EdgeInsets.all(16),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                      childAspectRatio: 1.5,
-                    ),
-                    itemCount: spots.length,
-                    itemBuilder: (context, index) {
-                      var spot = spots[index].data() as Map<String, dynamic>;
-                      String spotId = spots[index].id;
-
-                      bool isOccupied = false;
-                      DateTime? reservationExpiry;
-
-                      // Check realtime status
-                      if (realtimeData != null && realtimeData[spotId] != null) {
-                        final realtimeSpot = realtimeData[spotId];
-                        isOccupied = realtimeSpot['status'] == 'occupied' ||
-                                   realtimeSpot['status'] == 'reserved';
-                      }
-
-                      // Check bookings
-                      if (bookingsMap.containsKey(spotId)) {
-                        isOccupied = true;
-                        final booking = bookingsMap[spotId];
-                        if (booking['expiryTime'] != null) {
-                          reservationExpiry = (booking['expiryTime'] as Timestamp).toDate();
+        
+                    // Process bookings data
+                    if (bookingsSnapshot.hasData) {
+                      for (var doc in bookingsSnapshot.data!.docs) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        if (data['spotId'] != null) {
+                          bookingsMap[data['spotId']] = data;
                         }
                       }
-
-                      return ParkingSlot(
-                        slotName: spot['number'],
-                        slotId: spotId,
-                        isBooked: isOccupied,
-                        isReserved: isOccupied,
-                        time: '',
-                        onTap: isOccupied ? null : () => _bookSpot(spotId, spot['number']),
-                        reservationExpiry: reservationExpiry,
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          );
-        },
+                    }
+        
+                    return GridView.builder(
+                      padding: EdgeInsets.all(16),
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: 1.5,
+                      ),
+                      itemCount: spots.length,
+                      itemBuilder: (context, index) {
+                        var spot = spots[index].data() as Map<String, dynamic>;
+                        String spotId = spots[index].id;
+        
+                        bool isOccupied = false;
+                        DateTime? reservationExpiry;
+        
+                        // Check realtime status
+                        if (realtimeData != null && realtimeData[spotId] != null) {
+                          final realtimeSpot = realtimeData[spotId];
+                          isOccupied = realtimeSpot['status'] == 'occupied' ||
+                                     realtimeSpot['status'] == 'reserved';
+                        }
+        
+                        // Check bookings
+                        if (bookingsMap.containsKey(spotId)) {
+                          isOccupied = true;
+                          final booking = bookingsMap[spotId];
+                          if (booking['expiryTime'] != null) {
+                            reservationExpiry = (booking['expiryTime'] as Timestamp).toDate();
+                          }
+                        }
+        
+                        return ParkingSlot(
+                          slotName: spot['number'],
+                          slotId: spotId,
+                          isBooked: isOccupied,
+                          isReserved: isOccupied,
+                          time: '',
+                          onTap: isOccupied ? null : () => _bookSpot(spotId, spot['number']),
+                          reservationExpiry: reservationExpiry,
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }

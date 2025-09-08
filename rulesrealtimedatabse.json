@@ -1,0 +1,120 @@
+{
+  "rules": {
+    ".read": "auth != null",  
+    ".write": "auth != null", 
+    
+    "users": {
+      "$userId": {
+        ".read": "auth.uid == $userId", 
+        ".write": "auth.uid == $userId"
+      }
+    },
+    
+    "parking": {
+      "$parkingId": {
+        ".read": "auth != null",
+        ".write": "root.child('users/' + auth.uid + '/userType').val() === 'Parking Owner' && data.child('ownerId').val() == auth.uid"
+      }
+    },
+    
+    "bookings": {
+      "$bookingId": {
+        ".read": "auth != null",
+        ".write": "auth != null && (
+          data.child('userId').val() === auth.uid ||
+          newData.child('status').val() === 'expired'
+        )",
+        "expiryTime": {
+          ".validate": "newData.isNumber() && 
+                       newData.val() > now"
+        },
+        "status": {
+          ".validate": "newData.val() === 'active' || 
+                       newData.val() === 'expired' || 
+                       newData.val() === 'cancelled'"
+        }
+      }
+    },
+    
+    "qrcodes": {
+      "$qrId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    
+    "spots": {
+      "$parkingId": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        ".indexOn": ["status", "lastUpdated"],
+        
+        "$spotId": {
+          ".read": "auth != null",
+          ".write": "auth != null && (
+            root.child('users').child(auth.uid).child('userType').val() === 'Parking Owner' ||
+            !data.exists() ||
+            data.child('lastUserId').val() === auth.uid ||
+            root.child('parking').child($parkingId).child('ownerId').val() === auth.uid ||
+            (data.child('status').val() === 'reserved' && 
+             root.child('bookings').child(data.child('lastBookingId').val()).child('status').val() === 'expired')
+          )",
+          ".validate": "newData.hasChildren(['status', 'lastUpdated', 'ignoreStatusUpdates'])",
+          "status": {
+            ".validate": "newData.val() === 'available' || 
+                        newData.val() === 'occupied' || 
+                        newData.val() === 'reserved'"
+          },
+          "sensorDetected": {
+            ".validate": "newData.isBoolean()"
+          },
+          "lastSensorUpdate": {
+            ".validate": "newData.val() === now"
+          },
+          "ignoreStatusUpdates": {
+            ".validate": "newData.isBoolean()"
+          }
+        }
+      }
+    },
+    
+    "parkingOwners": {
+      "$ownerId": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid == $ownerId",
+        "parkings": {
+          "$parkingId": {
+            ".read": "auth != null",
+            ".write": "auth != null && auth.uid == $ownerId",
+            "spots": {
+              "$spotId": {
+                ".read": "auth != null",
+                ".write": "auth != null && (auth.uid == $ownerId || root.child('spots').child($parkingId).child($spotId).child('lastUserId').val() == auth.uid)",
+                ".validate": "newData.hasChildren(['status', 'lastUpdated'])"
+              }
+            }
+          }
+        }
+      }
+    },
+    
+    "spots": {
+      "$parkingId": {
+        "$spotId": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['status', 'lastUpdated'])",
+          "status": {
+            ".validate": "newData.val() === 'available' || newData.val() === 'occupied' || newData.val() === 'reserved'"
+          },
+          "lastBookingId": {
+            ".validate": "newData.val() != null"
+          },
+          "lastUserId": {
+            ".validate": "newData.val() != null"
+          }
+        }
+      }
+    }
+  }
+}

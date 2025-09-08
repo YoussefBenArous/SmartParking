@@ -2,8 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:smart_parking/HomePage/parkingownerPages/AddParking.dart';
 import 'package:smart_parking/HomePage/userpages/UserHome.dart';
-import 'package:smart_parking/HomePage/parkingownerPages/ParkingHome.dart';
 import 'package:smart_parking/Login_and_SignUp/SignUpPage.dart';
 import 'package:smart_parking/widget/button.dart';
 import 'package:smart_parking/widget/inputbutton.dart';
@@ -37,8 +37,8 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
-        email: _emailController.text,
-        password: _passwordController.text,
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
       );
 
       if (userCredential.user != null) {
@@ -79,24 +79,57 @@ class _LoginPageState extends State<LoginPage> {
       }
     } on FirebaseAuthException catch (e) {
       print("❌ FirebaseAuthException: ${e.code}");
-      String errorMessage = 'An error occurred';
-      if (e.code == 'user-not-found') {
-        errorMessage = 'No user found for that email.';
-      } else if (e.code == 'wrong-password') {
-        errorMessage = 'Wrong password provided.';
-      } else if (e.code == 'invalid-email') {
-        errorMessage = 'Invalid email address.';
-      } else if (e.code == 'too-many-requests') {
-        errorMessage = 'Too many requests. Try again later.';
+      String errorMessage;
+      
+      switch (e.code) {
+        case 'user-not-found':
+          errorMessage = 'No user found for that email.';
+          break;
+        case 'wrong-password':
+          errorMessage = 'Wrong password provided.';
+          break;
+        case 'invalid-email':
+          errorMessage = 'Invalid email address.';
+          break;
+        case 'invalid-credential':
+          errorMessage = 'Invalid email or password.';
+          break;
+        case 'too-many-requests':
+          errorMessage = 'Too many attempts. Please try again later.';
+          break;
+        case 'user-disabled':
+          errorMessage = 'This account has been disabled.';
+          break;
+        default:
+          errorMessage = 'Login failed. Please check your credentials.';
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
-      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'OK',
+              textColor: Colors.white,
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              },
+            ),
+          ),
+        );
+      }
     } catch (e) {
       print("❌ General error: ${e.toString()}");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('An unexpected error occurred. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -260,25 +293,6 @@ class _LoginPageState extends State<LoginPage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  IconButton(
-                    onPressed: () {},
-                    icon: const Icon(
-                      Icons.facebook,
-                      color: Colors.blue,
-                      size: 40,
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 10,
-                  ),
-                  IconButton(
-                    onPressed: () {},
-                    icon: const Icon(
-                      Icons.apple,
-                      color: Colors.black,
-                    ),
-                    iconSize: 40,
-                  ),
                   const SizedBox(
                     width: 10,
                   ),

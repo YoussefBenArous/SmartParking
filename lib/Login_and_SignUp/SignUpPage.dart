@@ -25,27 +25,35 @@ class _SignUpState extends State<SignUpPage> {
   bool _obscureText = true;
   String? selectedType;
   bool _isLoading = false;
-  bool _hasError = false;  // Flag for error border
+  bool _hasError = false;
+  bool _isPhoneValid = false;
 
   void _signUp() async {
     if (!_formKey.currentState!.validate()) {
+      setState(() {
+        _isLoading = false;
+      });
       return;
     }
+
     setState(() {
       _isLoading = true;
     });
 
     if (!_ischecked) {
+      setState(() {
+        _isLoading = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text("Please agree to the terms and conditions")),
+        const SnackBar(content: Text("Please agree to the terms and conditions")),
       );
       return;
     }
 
     if (selectedType == null) {
       setState(() {
-        _hasError = true;  // Show error border
+        _hasError = true; // Show error border
+        _isLoading = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please select a user type")),
@@ -145,6 +153,7 @@ class _SignUpState extends State<SignUpPage> {
                 ),
               ),
               const SizedBox(height: 10),
+              // Name input
               inputbutton(
                 hintText: "Enter Your Name",
                 controller: _nameTextController,
@@ -155,23 +164,30 @@ class _SignUpState extends State<SignUpPage> {
                   return null;
                 },
               ),
-              SizedBox(
-                height: 10,
-              ),
+
+              const SizedBox(height: 10),
+
+              // Email input
               inputbutton(
                 hintText: "Enter Your E-mail",
                 controller: _emailTextController,
                 validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return "Please enter your E-mail";
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a valid email';
+                  }
+                  if (!RegExp(
+                          r"^[a-zA-Z0-9.a-zA-Z0-9.!#$%&'*+-/=?^_`{|}~]+@[a-zA-Z0-9]+\.[a-zA-Z]+")
+                      .hasMatch(value)) {
+                    return 'Please enter a valid email';
                   }
                   return null;
                 },
               ),
-              SizedBox(
-                height: 10,
-              ),
-              inputbutton(
+
+              const SizedBox(height: 10),
+
+              // Phone number input
+               inputbutton(
                 hintText: "Enter Your Phone Number",
                 controller: _phoneTextController,
                 validator: (value) {
@@ -181,113 +197,128 @@ class _SignUpState extends State<SignUpPage> {
                   return null;
                 },
               ),
-              SizedBox(
-                height: 10,
-              ),
+
+              const SizedBox(height: 10),
+
+              // Password input
               inputbutton(
                 hintText: "Enter Your Password",
                 obscureText: _obscureText,
                 suffixIcon: IconButton(
-                  onPressed: () {
-                    setState(() {
-                      _obscureText = !_obscureText;
-                    });
-                  },
-                  icon: Icon(
-                    _obscureText
-                        ? Icons.visibility_off_outlined
-                        : Icons.visibility_outlined,
-                  ),
+                  onPressed: () => setState(() => _obscureText = !_obscureText),
+                  icon: Icon(_obscureText
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined),
                 ),
                 controller: _passwordTextController,
                 validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return "Please enter your Password";
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter a password';
+                  }
+                  if (value.length < 6) {
+                    return 'Password must be at least 6 characters long';
                   }
                   return null;
                 },
               ),
-              SizedBox(
-                height: 10,
-              ),
-              // Dropdown button with error border
-              SizedBox(
-                height: 55,
-                width: 375,
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _hasError
-                          ? Colors.red
-                          : Color(0XFF8B8B8B),
-                      width: 2,
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: DropdownButton<String>(
-                      value: selectedType,
-                      hint: Text(
-                        "Select Your Type",
-                        style: TextStyle(
-                          fontStyle: FontStyle.normal,
-                          fontSize: 12,
-                          color: Color(0XFF8B8B8B),
-                        ),
-                      ),
-                      isExpanded: true,
-                      underline: SizedBox(),
-                      onChanged: (String? newValue) {
-                        setState(() {
-                          selectedType = newValue;
-                          _hasError = false;  // Reset error border
-                        });
-                      },
-                      items: [
-                        DropdownMenuItem(
-                          
-                          child: Text(
-                            "select Your Type",
-                            style: TextStyle(
-                              fontStyle: FontStyle.normal,
-                              fontSize: 12,
-                              color: Color(0XFF8B8B8B),
+
+              const SizedBox(height: 10),
+
+              // Type selector
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: FormField<String>(
+                  validator: (value) {
+                    if (selectedType == null) {
+                      _hasError = true;
+                      return 'Please select a user type';
+                    }
+                    return null;
+                  },
+                  builder: (FormFieldState<String> state) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          height: 55,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              width: 2,
+                              color: (_hasError || state.hasError)
+                                  ? Colors.red
+                                  : const Color(0xff8B8B8B),
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: selectedType,
+                              isExpanded: true,
+                              hint: const Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 4),
+                                child: Text(
+                                  "Select Your Type",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontStyle: FontStyle.normal,
+                                    color: Color(0xff8B8B8B),
+                                  ),
+                                ),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              items: const [
+                                DropdownMenuItem(
+                                  value: "User",
+                                  child: Text(
+                                    "User",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.normal,
+                                      color: Color(0xff8B8B8B),
+                                    ),
+                                  ),
+                                ),
+                                DropdownMenuItem(
+                                  value: "Parking Owner",
+                                  child: Text(
+                                    "Parking Owner",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.normal,
+                                      color: Color(0xff8B8B8B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              onChanged: (String? newValue) {
+                                setState(() {
+                                  selectedType = newValue;
+                                  _hasError = false;
+                                  state.didChange(newValue);
+                                });
+                              },
                             ),
                           ),
-                          value: null,
-                          enabled: false,
                         ),
-                        DropdownMenuItem(
-                          child: Text(
-                            "User",
-                            style: TextStyle(
-                              fontStyle: FontStyle.normal,
-                              fontSize: 12,
-                              color: Color(0XFF8B8B8B),
+                        if (state.hasError)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 12, top: 8),
+                            child: Text(
+                              state.errorText!,
+                              style: const TextStyle(
+                                color: Colors.red,
+                                fontSize: 12,
+                              ),
                             ),
                           ),
-                          value: "User",
-                        ),
-                        DropdownMenuItem(
-                          child: Text(
-                            "Parking Owner",
-                            style: TextStyle(
-                              fontStyle: FontStyle.normal,
-                              fontSize: 12,
-                              color: Color(0XFF8B8B8B),
-                            ),
-                          ),
-                          value: "Parking Owner",
-                        ),
                       ],
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
-              SizedBox(
-                height: 10,
-              ),
+
+              const SizedBox(height: 10),
+              
               Padding(
                 padding: const EdgeInsets.only(left: 30),
                 child: Row(
@@ -296,7 +327,7 @@ class _SignUpState extends State<SignUpPage> {
                       padding: const EdgeInsets.only(bottom: 10),
                       child: Checkbox(
                         activeColor: Colors.blue,
-                        side: BorderSide(
+                        side: const BorderSide(
                           color: Color(0XFF8B8B8B),
                           width: 2,
                         ),
@@ -357,14 +388,13 @@ class _SignUpState extends State<SignUpPage> {
                   ],
                 ),
               ),
-              const SizedBox(
-                height: 10,
-              ),
+              const SizedBox(height: 10),
+              
               Center(
                 child: _isLoading
                     ? const CircularProgressIndicator()
                     : button(
-                        onPressed: _signUp , // Disable if checkbox not checked
+                        onPressed: _signUp,
                         text: "Sign Up",
                         fontsize: 20,
                         width: 215,
@@ -372,9 +402,8 @@ class _SignUpState extends State<SignUpPage> {
                         radius: 18,
                       ),
               ),
-              const SizedBox(
-                height: 40,
-              ),
+              const SizedBox(height: 40),
+              
               Text.rich(
                 TextSpan(
                   children: <TextSpan>[
@@ -397,7 +426,7 @@ class _SignUpState extends State<SignUpPage> {
                         ..onTap = () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                                builder: (context) => LoginPage()),
+                                builder: (context) => const LoginPage()),
                           );
                         },
                     ),

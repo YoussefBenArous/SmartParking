@@ -4,46 +4,41 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class FirebaseService {
   static final FirebaseDatabase rtdb = FirebaseDatabase.instance;
   static final FirebaseFirestore firestore = FirebaseFirestore.instance;
 
   static Future<void> initializeFirebase() async {
-    WidgetsFlutterBinding.ensureInitialized();
+    try {
+      WidgetsFlutterBinding.ensureInitialized();
 
-    // Check internet connectivity
-    var connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult == ConnectivityResult.none) {
-      throw Exception("No internet connection available");
-    }
-
-    // Initialize Firebase with correct options
-    if (kIsWeb) {
       await Firebase.initializeApp(
         options: const FirebaseOptions(
-          apiKey: "AIzaSyDQXeWa2oNzh6WX17w7cdHT7pkmUizwJVc",
-          authDomain: "smartparking-4025c.firebaseapp.com",
-          databaseURL: "https://smartparking-4025c-default-rtdb.europe-west1.firebasedatabase.app",
-          projectId: "smartparking-4025c",
-          storageBucket: "smartparking-4025c.appspot.com",
-          messagingSenderId: "786760277384",
-          appId: "1:786760277384:web:891d912f6aed4dd3952e3d",
-          measurementId: "G-SBERQ6WY93",
+          apiKey: "AIzaSyBxB5NIsh-rcnJOHF_lkG9465N2gl19ByM",
+          authDomain: "parking-da1e0.firebaseapp.com",
+          databaseURL: "https://parking-da1e0-default-rtdb.firebaseio.com", // Fixed URL
+          projectId: "parking-da1e0",
+          storageBucket: "parking-da1e0.appspot.com",
+          messagingSenderId: "923155382800",
+          appId: "1:923155382800:web:7db8a68292817337e5c095"
         ),
       );
-    } else {
-      await Firebase.initializeApp();
+      
+      // Initialize Realtime Database with persistence
+      rtdb.setPersistenceEnabled(true);
+      rtdb.setLoggingEnabled(true); // Enable logging for debugging
+      
+      // Configure Firestore settings
+      firestore.settings = const Settings(
+        persistenceEnabled: true,
+        cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+      );
+    } catch (e) {
+      print('Failed to initialize Firebase: $e');
+      throw e;
     }
-
-    // Configure Realtime Database persistence
-    rtdb.setPersistenceEnabled(true);
-    
-    // Configure Firestore settings
-    firestore.settings = const Settings(
-      persistenceEnabled: true,
-      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
-    );
   }
 
   // Helper method to check connection status

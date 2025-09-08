@@ -1,127 +1,181 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:smart_parking/Login_and_SignUp/LoginPage.dart';
 
 class AuthService {
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Vérifier l'état de connexion
-  static Stream<User?> get authStateChanges => _auth.authStateChanges();
-
-  // Vérifier le rôle de l'utilisateur
-  static Future<String?> getUserRole() async {
-    final user = _auth.currentUser;
-    if (user == null) return null;
-
+  // Sign Up Method
+  Future<UserCredential?> signUpWithEmailAndPassword({
+    required String email,
+    required String password,
+    required String name,
+    required String userType,
+  }) async {
     try {
-      final doc = await _firestore.collection('users').doc(user.uid).get();
-      return doc.data()?['userType'] as String?;
-    } catch (e) {
-      print('Erreur lors de la récupération du rôle: $e');
+      // Email validation
+      if (!email.contains('@') || !email.contains('.')) {
+        throw FirebaseAuthException(
+          code: 'invalid-email',
+          message: 'Please enter a valid email address',
+        );
+      }
+
+      // Password validation
+      if (password.length < 6) {
+        throw FirebaseAuthException(
+          code: 'weak-password',
+          message: 'Password should be at least 6 characters',
+        );
+      }
+
+      // Create user with email and password
+      final userCredential = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      // If user creation successful, store additional info in Firestore
+      if (userCredential.user != null) {
+        await _firestore.collection('users').doc(userCredential.user!.uid).set({
+          'name': name,
+          'email': email,
+          'userType': userType,
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        // Update user profile
+        await userCredential.user!.updateDisplayName(name);
+        
+        return userCredential;
+      }
       return null;
+    } on FirebaseAuthException catch (e) {
+      switch (e.code) {
+        case 'email-already-in-use':
+          throw FirebaseAuthException(
+            code: e.code,
+            message: 'This email is already registered. Please login or use a different email.',
+          );
+        case 'invalid-email':
+          throw FirebaseAuthException(
+            code: e.code,
+            message: 'Please enter a valid email address.',
+          );
+        case 'operation-not-allowed':
+          throw FirebaseAuthException(
+            code: e.code,
+            message: 'Email/password accounts are not enabled. Please contact support.',
+          );
+        case 'weak-password':
+          throw FirebaseAuthException(
+            code: e.code,
+            message: 'Please enter a stronger password.',
+          );
+        default:
+          throw FirebaseAuthException(
+            code: 'registration-failed',
+            message: 'Registration failed. Please try again later.',
+          );
+      }
+    } catch (e) {
+      throw FirebaseAuthException(
+        code: 'unknown',
+        message: 'An unexpected error occurred. Please try again.',
+      );
     }
   }
 
-  Future<void> signout({required BuildContext context}) async {
+  // Sign In Method
+  Future<UserCredential> signInWithEmailAndPassword({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      // First verify if Firestore is available
+      await _firestore.collection('users').limit(1).get();
+
+      // Attempt sign in
+      final userCredential = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      // Update last login
+      await _firestore.collection('users').doc(userCredential.user!.uid).update({
+        'lastLogin': FieldValue.serverTimestamp(),
+      });
+
+      return userCredential;
+    } on FirebaseAuthException catch (e) {
+      throw _handleAuthException(e);
+    }
+  }
+
+  // Sign Out Method
+  Future<void> signOut({required BuildContext context}) async {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        try {
-          // Query only user's own active bookings (matches rules)
-          final activeBookings = await _firestore
-              .collection('bookings')
-              .where('userId', isEqualTo: user.uid)
-              .where('status', isEqualTo: 'active')
-              .get();
-
-          if (activeBookings.docs.isNotEmpty) {
-            final confirm = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                title: const Text('Active Bookings'),
-                content: const Text('You have active bookings. Are you sure you want to sign out?'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(false),
-                    child: const Text('Cancel'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.grey),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: const Text('Sign Out'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.red),
-                  ),
-                ],
-              ),
-            );
-
-            if (confirm != true) return;
-          }
-        } catch (e) {
-          print('Error checking active bookings: $e');
-          // Continue with signout even if checking bookings fails
-        }
+        // Update last sign out time
+        await _firestore.collection('users').doc(user.uid).update({
+          'lastSignOut': FieldValue.serverTimestamp(),
+          'activeSession': null,
+        });
       }
 
+      // Clear all persistent data
+      await Future.wait([
+        _firestore.terminate(),
+        _firestore.clearPersistence(),
+      ]);
+
+      // Sign out from Firebase Auth
       await _auth.signOut();
       
-      // Show success message in VS Code console
-      print('User signed out successfully');
+      // Initialize a new instance after signout
+      await _firestore.enableNetwork();
 
-      if (context.mounted) {
-        // Show success message in app
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Signed out successfully'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
-        );
-
-        // Navigate to login page
-        await Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const LoginPage()),
-          (route) => false,
-        );
-      }
-    } on FirebaseException catch (e) {
-      print('Firebase Error during sign-out: ${e.code} - ${e.message}');
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${e.message}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     } catch (e) {
-      print('Error during sign-out: $e');
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to sign out. Please try again.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+      print('Sign out error: $e');
+      // Ensure user is signed out even if Firestore operations fail
+      await _auth.signOut();
     }
   }
-  // Vérifier la permission de localisation
-  // static Future<bool> verifyLocationPermission() async {
-  //   try {
-  //     LocationPermission permission = await Geolocator.checkPermission();
-  //     if (permission == LocationPermission.denied) {
-  //       permission = await Geolocator.requestPermission();
-  //     }
-  //     return permission != LocationPermission.denied &&
-  //            permission != LocationPermission.deniedForever;
-  //   } catch (e) {
-  //     print('Erreur de permission de localisation: $e');
-  //     return false;
-  //   }
-  // }
+
+  // Helper method to handle auth exceptions
+  Exception _handleAuthException(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'invalid-credential':
+        return Exception('Invalid email or password');
+      case 'user-disabled':
+        return Exception('This account has been disabled');
+      case 'user-not-found':
+        return Exception('No account found with this email');
+      case 'wrong-password':
+        return Exception('Incorrect password');
+      case 'email-already-in-use':
+        return Exception('An account already exists with this email');
+      case 'operation-not-allowed':
+        return Exception('Operation not allowed');
+      case 'weak-password':
+        return Exception('Please enter a stronger password');
+      default:
+        return Exception('Authentication failed: ${e.message}');
+    }
+  }
+
+  // Helper method to check Firestore connection
+  Future<void> ensureFirestoreConnection() async {
+    try {
+      await _firestore.enableNetwork();
+      await _firestore.collection('users').limit(1).get();
+    } catch (e) {
+      print('Error ensuring Firestore connection: $e');
+      // Attempt to reinitialize Firestore
+      await _firestore.terminate();
+      await _firestore.enableNetwork();
+    }
+  }
 }

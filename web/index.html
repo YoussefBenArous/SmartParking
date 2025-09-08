@@ -3,63 +3,35 @@
 <head>
   <base href="$FLUTTER_BASE_HREF">
   <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <title>Smart Parking</title>
 
-  <!-- iOS meta tags & icons -->
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="smart_parking">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <!-- Firebase SDKs -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getFirestore } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+    import { getAuth } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+    import { getDatabase } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-
-  <link rel="icon" type="image/png" href="favicon.png"/>
-  <title>smart_parking</title>
-
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/9.x.x/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.x.x/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.x.x/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.x.x/firebase-database-compat.js"></script>
-
-  <script>
-    // Single Firebase initialization
+    // Your web app's Firebase configuration
     const firebaseConfig = {
       apiKey: "your-api-key",
-      authDomain: "your-auth-domain",
-      projectId: "your-project-id",
-      storageBucket: "your-storage-bucket",
+      authDomain: "smartparking-4025c.firebaseapp.com",
+      databaseURL: "https://smartparking-4025c-default-rtdb.firebaseio.com",
+      projectId: "smartparking-4025c",
+      storageBucket: "smartparking-4025c.appspot.com",
       messagingSenderId: "your-sender-id",
-      appId: "your-app-id",
-      databaseURL: "your-database-url"
+      appId: "your-app-id"
     };
 
-    // Initialize Firebase before Flutter
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
-    }
-  </script>
-
-  <script>
-    window.addEventListener('load', function(ev) {
-      // Download main.dart.js
-      _flutter.loader.loadEntrypoint({
-        serviceWorker: {
-          serviceWorkerVersion: serviceWorkerVersion,
-        },
-        onEntrypointLoaded: async function(engineInitializer) {
-          const appRunner = await engineInitializer.initializeEngine({
-            renderer: "html"
-          });
-          await appRunner.runApp();
-        }
-      });
-    });
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    const database = getDatabase(app);
   </script>
 </head>
 <body>
+  <!-- Load Flutter -->
   <script src="main.dart.js" type="application/javascript"></script>
 </body>
 </html>

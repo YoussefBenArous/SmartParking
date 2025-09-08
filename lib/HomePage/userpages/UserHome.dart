@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -7,8 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:smart_parking/HomePage/parkingownerPages/ParkingSearchDelegate.dart';
-import 'package:smart_parking/Login_and_SignUp/LoginPage.dart';
-import 'package:smart_parking/QRcode/QRCodeScreen.dart';
+import 'package:smart_parking/PayScreen/PaymentSuccessScreen.dart';
 import 'package:smart_parking/QRcode/milticodeQR.dart';
 import 'package:smart_parking/Setting/Setting.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -46,6 +44,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _initializeLocationSettings();
     _initializeApp();
     _loadParkingLocations();
+    _checkPendingPayment();
   }
 
   @override
@@ -326,11 +325,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void _searchParking(String query) {
+    print("DEBUG: Searching for parking with query: $query");
+    print("DEBUG: Total parking locations: ${_parkingLocations.length}");
+    
     setState(() {
-      _filteredParkingLocations = _parkingLocations
-          .where((parking) =>
-              parking['name'].toLowerCase().contains(query.toLowerCase()))
-          .toList();
+      _filteredParkingLocations = _parkingLocations.where((parking) {
+        final name = parking['name']?.toString().toLowerCase() ?? '';
+        final searchQuery = query.toLowerCase();
+        final matches = name.contains(searchQuery);
+        print("DEBUG: Checking parking '${parking['name']}' - Match: $matches");
+        return matches;
+      }).toList();
+      
+      print("DEBUG: Found ${_filteredParkingLocations.length} matching locations");
     });
   }
 
@@ -490,6 +497,37 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _checkPendingPayment() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final pendingPayment = await FirebaseFirestore.instance
+          .collection('payments')
+          .doc(user.uid)
+          .get();
+
+      if (!pendingPayment.exists) return;
+      
+      final paymentData = pendingPayment.data();
+      if (paymentData?['status'] == 'pending') {
+        // Redirect to payment screen
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PaymentSuccessScreen(
+              parkingId: paymentData?['parkingId'],
+              spotId: paymentData?['spotId'],
+              totalCost: paymentData?['amount'],
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error checking pending payment: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -536,11 +574,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           IconButton(
             icon: Icon(Icons.search),
             onPressed: () async {
+              print("DEBUG: Opening search delegate");
+              print("DEBUG: Available parking locations: ${_parkingLocations.length}");
+              
               final selected = await showSearch(
                 context: context,
                 delegate: ParkingSearchDelegate(_parkingLocations),
               );
+              
               if (selected != null && _mapController != null && mounted) {
+                print("DEBUG: Selected parking: ${selected['name']}");
                 setState(() {
                   _mapController.move(selected['location'], 15.0);
                 });
@@ -635,9 +678,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               MainAxisAlignment.spaceAround, // Distribute space evenly
           children: [
             IconButton(
-              onPressed: () async {
-                await AuthService().signout(context: context);
-              },
+              onPressed: _handleSignOut, // Update this line
               icon: Icon(
                 Icons.exit_to_app_outlined,
                 color: Color(0XFF767D81),
@@ -856,6 +897,69 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleSignOut() async {
+    // Show confirmation dialog first
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Confirm Sign Out'),
+          content: const Text('Are you sure you want to sign out?'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            TextButton(
+              child: const Text('Sign Out'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        );
+      },
+    );
+
+    // If user didn't confirm, return
+    if (confirm != true) return;
+
+    try {
+      // Cancel all subscriptions first
+      _locationSubscription?.cancel();
+      _locationUpdateTimer?.cancel();
+      _parkingSubscription?.cancel();
+      _mapController.dispose();
+
+      // Clean up user session in Firestore
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({
+          'lastSignOut': FieldValue.serverTimestamp(),
+          'activeSession': false,
+        });
+      }
+
+      // Sign out from Firebase Auth
+      await FirebaseAuth.instance.signOut();
+
+      if (!mounted) return;
+
+      // Navigate to login and clear all routes
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+    } catch (e) {
+      if (!mounted) return;
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error signing out: ${e.toString()}'),
           backgroundColor: Colors.red,
         ),
       );

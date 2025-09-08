@@ -59,8 +59,12 @@ dependencies:
   geolocator: ^10.1.0
   geocoding: ^2.1.1
   another_dashed_container: ^1.0.0
-  fl_chart: ^0.71.0
+  fl_chart: ^0.66.0
   intl: ^0.20.2
+  flutter_stripe: ^9.4.0
+  stripe_platform_interface: ^9.4.0  # Add this line with matching version
+  cloud_functions: ^4.5.8
+  intl_phone_number_input: ^0.7.3+1
 
 flutter_launcher_icons:
   android: true  # Change "launcher_icon" to true
@@ -105,10 +109,11 @@ flutter:
     - assets/images/logoparki.png
     - assets/images/car.png
     - assets/images/1.png
-    - assets/images/TND.png
+    - assets/images/TNDD.jpg
     - assets/images/d17.png
     - assets/images/visa.png
     - assets/images/cardbancaire.png
+    - assets/images/Search1.gif
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/assets-and-images/#resolution-aware
